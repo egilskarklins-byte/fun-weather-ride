@@ -32,8 +32,9 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
   FitnessLevel _fitness = FitnessLevel.medium;
   TravelParty _party = TravelParty.solo;
 
-  String _regionText = 'Rīga un apkārtne, Latvija';
-  LatLon _startPoint = const LatLon(56.9496, 24.1052);
+  String _regionText = 'Olaine, Latvija';
+  LatLon _startPoint = const LatLon(56.7934, 23.9358);
+
 
   double _maxKmPerDay = 180;
 
@@ -145,7 +146,6 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
         final res = await _places.autocomplete(
           input: q,
           languageCode: 'lv',
-          components: 'country:lv',
         );
         if (!mounted) return;
         setState(() {
@@ -545,7 +545,7 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
             ),
 
             const SizedBox(height: 16),
-            _section('Must-see (Google Places Autocomplete)'),
+            _section ('Must-see (visā pasaulē)'),
             TextField(
               controller: _mustSeeCtrl,
               onChanged: _onMustSeeChanged,
@@ -603,6 +603,13 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
               ))
                   .toList(),
             ),
+            const SizedBox(height: 12),
+
+            OutlinedButton.icon(
+              onPressed: _mustSee.isEmpty ? null : _estimateOptimalDays,
+              icon: const Icon(Icons.auto_graph),
+              label: const Text('Aprēķināt optimālo dienu skaitu'),
+            ),
 
             const SizedBox(height: 24),
             SizedBox(
@@ -614,6 +621,47 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+  void _estimateOptimalDays() {
+    if (_mustSee.length < 2) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Pievieno vismaz 2 must-see punktus')),
+      );
+      return;
+    }
+
+    // vienkāršs heuristisks aprēķins (pagaidu MVP algoritms)
+    double totalKm = 0;
+
+    for (int i = 1; i < _mustSee.length; i++) {
+      totalKm += _distanceKm(
+        _mustSee[i - 1].location,
+        _mustSee[i].location,
+      );
+    }
+
+    // pieskaitām arī turp-atpakaļ no starta
+    totalKm += _distanceKm(_startPoint, _mustSee.first.location);
+    totalKm += _distanceKm(_mustSee.last.location, _startPoint);
+
+    final days = (totalKm / _maxKmPerDay).ceil().clamp(1, 30);
+
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Ieteicamais ceļojuma ilgums'),
+        content: Text(
+          'Balstoties uz attālumiem starp izvēlētajiem must-see punktiem, '
+              'ieteicamais ilgums ir apmēram $days dienas.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('OK'),
+          ),
+        ],
       ),
     );
   }
