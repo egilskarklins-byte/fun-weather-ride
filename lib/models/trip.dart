@@ -20,8 +20,10 @@ class TripInput {
   final LatLon startPoint;
 
   final int maxKmPerDay;
-
   final List<Poi> mustSee;
+
+  /// Moving tour opcija: pēdējā dienā pievieno atgriešanos startā
+  final bool returnToStart;
 
   const TripInput({
     required this.startDate,
@@ -35,16 +37,24 @@ class TripInput {
     required this.startPoint,
     required this.maxKmPerDay,
     required this.mustSee,
+    this.returnToStart = false,
   });
 
+  // Ietekme uz dienas slodzi (stundām)
   double fitnessMultiplier() => switch (fitness) {
     FitnessLevel.low => 0.75,
     FitnessLevel.medium => 1.0,
     FitnessLevel.high => 1.2,
   };
 
-  /// Dienas laika "budžets" (braukšana + pieturas) — NEATKARĪGI no km slīdņa.
-  /// Km slīdnis limitē attālumu atsevišķi.
+  // Cik pieturas max dienā (UI līmenī var izmantot, bet engine tagad rēķina pats)
+  int maxStopsPerDay() => switch (fitness) {
+    FitnessLevel.low => 3,
+    FitnessLevel.medium => 5,
+    FitnessLevel.high => 8,
+  };
+
+  /// Dienas laika "budžets" (braukšana + pieturas)
   double get maxHoursPerDay => switch (transport) {
     TransportMode.car => 9.0,
     TransportMode.bike => 6.0,

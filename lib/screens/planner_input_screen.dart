@@ -31,28 +31,43 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
   TransportMode _transport = TransportMode.car;
   FitnessLevel _fitness = FitnessLevel.medium;
   TravelParty _party = TravelParty.solo;
+  bool _returnToStart = false;
 
+  // Default start (Olaine)
   String _regionText = 'Olaine, Latvija';
   LatLon _startPoint = const LatLon(56.7934, 23.9358);
 
-
   double _maxKmPerDay = 180;
 
-  final _engine = PlannerEngine();
+  final PlannerEngine _engine = PlannerEngine();
 
-  final _weatherApi = const WeatherApiService();
-  final _places = PlacesService();
-  final _poiCatalog = PoiCatalogService();
+  final WeatherApiService _weatherApi = const WeatherApiService();
+  final PlacesService _places = PlacesService();
+  final PoiCatalogService _poiCatalog = PoiCatalogService();
 
-  final _projectStorage = ProjectStorageService();
+  final ProjectStorageService _projectStorage = ProjectStorageService();
 
   bool _loading = false;
+
+  // -------------------- Start point (NEW) --------------------
+  final TextEditingController _startCtrl = TextEditingController();
+  LatLon? _customStartPoint;
+
+  final List<PlaceSuggestion> _startSuggestions = [];
+  Timer? _startDebounce;
+  bool _loadingStartSuggest = false;
+
+  LatLon get _activeStartPoint => _customStartPoint ?? _startPoint;
+  String get _activeStartLabel => _startCtrl.text.trim().isEmpty
+      ? _regionText
+      : _startCtrl.text.trim();
+  // ------------------ END Start point ------------------
 
   // Must-see
   final List<Poi> _mustSee = [];
   final TextEditingController _mustSeeCtrl = TextEditingController();
 
-  // Autocomplete UI state
+  // Must-see autocomplete
   final List<PlaceSuggestion> _suggestions = [];
   Timer? _debounce;
   bool _loadingSuggest = false;
@@ -70,11 +85,13 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
   @override
   void dispose() {
     _debounce?.cancel();
+    _startDebounce?.cancel();
     _mustSeeCtrl.dispose();
+    _startCtrl.dispose();
     super.dispose();
   }
 
-  // -------------------- NEW: distance + warning --------------------
+  // -------------------- Distance + warning --------------------
   double _distanceKm(LatLon a, LatLon b) {
     const earthRadius = 6371.0;
     final dLat = _deg2rad(b.lat - a.lat);
@@ -91,10 +108,9 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
   }
 
   double _deg2rad(double deg) => deg * math.pi / 180.0;
-
   void _warnIfTooFar(Poi poi) {
-    // limitu rēķinam "turp + atpakaļ" no startPoint (bāzes)
-    final kmRoundTrip = (_distanceKm(_startPoint, poi.location) * 2);
+    // limitu rēķinam "turp + atpakaļ" no AKTĪVĀ start point
+    final kmRoundTrip = (_distanceKm(_activeStartPoint, poi.location) * 2);
 
     if (kmRoundTrip > _maxKmPerDay) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -107,8 +123,9 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
       );
     }
   }
-  // ------------------ END NEW ------------------
+  // ------------------ END Distance + warning ------------------
 
+  // -------------------- Dates --------------------
   Future<void> _pickDateRange() async {
     final now = DateTime.now();
     final picked = await showDateRangePicker(
@@ -131,7 +148,93 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
     return '${two(_start!.day)}.${two(_start!.month)}.${_start!.year} – '
         '${two(_end!.day)}.${two(_end!.month)}.${_end!.year}';
   }
+  // ------------------ END Dates ------------------
 
+  // -------------------- Start point autocomplete --------------------
+  void _onStartChanged(String v) {
+    _startDebounce?.cancel();
+    _startDebounce = Timer(const Duration(milliseconds: 250), () async {
+      final q = v.trim();
+      if (q.length < 2) {
+        if (mounted) {
+          setState(() {
+            _startSuggestions.clear();
+            _loadingStartSuggest = false;
+          });
+        }
+        return;
+      }
+
+      if (mounted) setState(() => _loadingStartSuggest = true);
+
+      try {
+        final res = await _places.autocomplete(
+          input: q,
+          languageCode: 'lv',
+        );
+
+        if (!mounted) return;
+        setState(() {
+          _startSuggestions
+            ..clear()
+            ..addAll(res);
+        });
+      } finally {
+        if (mounted) setState(() => _loadingStartSuggest = false);
+      }
+    });
+  }
+
+  Future<void> _selectStart(PlaceSuggestion s) async {
+    // paņemam koordinātes no place details
+    final poi = await _places.placeDetailsToPoi(
+      placeId: s.placeId,
+      languageCode: 'lv',
+    );
+
+    if (poi == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Neizdevās ielādēt sākumpunkta koordinātes')),
+      );
+      return;
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _customStartPoint = poi.location;
+      _regionText = s.description;
+      _startCtrl.text = s.description;
+      _startSuggestions.clear();
+    });
+
+    // UX: ja jau ir must-see, varam pārrēķināt brīdinājumus “implicīti”
+    if (_mustSee.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Sākumpunkts uzstādīts: ${poi.name}'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  void _resetStartToDefault() {
+    setState(() {
+      _customStartPoint = null;
+      _startCtrl.clear();
+      _startSuggestions.clear();
+      _regionText = 'Olaine, Latvija';
+      _startPoint = const LatLon(56.7934, 23.9358);
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Sākumpunkts atjaunots uz Olaine')),
+    );
+  }
+  // ------------------ END Start point autocomplete ------------------
+
+  // -------------------- Must-see autocomplete --------------------
   void _onMustSeeChanged(String v) {
     _debounce?.cancel();
     _debounce = Timer(const Duration(milliseconds: 250), () async {
@@ -191,7 +294,7 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
         _suggestions.clear();
       });
 
-      // NEW: warning pie pievienošanas
+      // warning pie pievienošanas
       _warnIfTooFar(poi);
     } finally {
       if (mounted) setState(() => _addingMustSee = false);
@@ -230,12 +333,13 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
         _suggestions.clear();
       });
 
-      // NEW: warning pie pievienošanas
+      // warning pie pievienošanas
       _warnIfTooFar(poi);
     } finally {
       if (mounted) setState(() => _addingMustSee = false);
     }
   }
+  // ------------------ END Must-see autocomplete ------------------
 
   Widget _section(String t) => Text(
     t,
@@ -290,7 +394,7 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
       fitness: _fitness,
       party: _party,
       regionText: _regionText,
-      startPoint: _startPoint,
+      startPoint: _activeStartPoint,
       maxKmPerDay: _maxKmPerDay,
       mustSee: List<Poi>.from(_mustSee),
     );
@@ -368,6 +472,8 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
 
       _regionText = selected.regionText;
       _startPoint = selected.startPoint;
+      _customStartPoint = null;
+      _startCtrl.text = selected.regionText;
 
       _maxKmPerDay = selected.maxKmPerDay;
 
@@ -377,6 +483,7 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
 
       _mustSeeCtrl.clear();
       _suggestions.clear();
+      _startSuggestions.clear();
     });
 
     ScaffoldMessenger.of(context).showSnackBar(
@@ -419,24 +526,171 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
       _currentProjectId = null;
       _currentProjectName = null;
 
-      // atstājam region/startPoint kā ir
       _start = null;
       _end = null;
+
       _mode = TripMode.singleBase;
       _transport = TransportMode.car;
       _fitness = FitnessLevel.medium;
       _party = TravelParty.solo;
+
       _maxKmPerDay = 180;
 
       _mustSee.clear();
       _mustSeeCtrl.clear();
       _suggestions.clear();
+
+      _customStartPoint = null;
+      _startCtrl.clear();
+      _startSuggestions.clear();
+
+      _regionText = 'Olaine, Latvija';
+      _startPoint = const LatLon(56.7934, 23.9358);
     });
   }
 
+  void _estimateOptimalDays() {
+    if (_mustSee.length < 2) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Pievieno vismaz 2 must-see punktus')),
+      );
+      return;
+    }
+
+    double totalKm = 0;
+
+    for (int i = 1; i < _mustSee.length; i++) {
+      totalKm += _distanceKm(
+        _mustSee[i - 1].location,
+        _mustSee[i].location,
+      );
+    }
+
+    // turp-atpakaļ no starta (AKTĪVĀ)
+    totalKm += _distanceKm(_activeStartPoint, _mustSee.first.location);
+    totalKm += _distanceKm(_mustSee.last.location, _activeStartPoint);
+
+    final days = (totalKm / _maxKmPerDay).ceil().clamp(1, 30);
+
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Ieteicamais ceļojuma ilgums'),
+        content: Text(
+          'Balstoties uz attālumiem starp izvēlētajiem must-see punktiem, '
+              'ieteicamais ilgums ir apmēram $days dienas.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ====================== NEW layout helper sections ======================
+
+  Widget _buildDatesSection() {
+    return Card(
+      elevation: 2,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _section('📅 Datumi'),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: _pickDateRange,
+              icon: const Icon(Icons.date_range),
+              label: Text(_formatDateRange()),
+            ),
+            const SizedBox(height: 8),
+            Text('Dienu skaits: $_daysCount'),
+          ],
+        ),
+      ),
+    );
+  }
+
+
+  Widget _buildStartPointSection() {
+    return Card(
+      elevation: 2,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _section('📍 Sākumpunkts'),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _startCtrl,
+              onChanged: _onStartChanged,
+              decoration: InputDecoration(
+                border: const OutlineInputBorder(),
+                hintText: 'Ievadi pilsētu vai vietu, no kuras sāksi',
+                suffixIcon: _loadingStartSuggest
+                    ? const Padding(
+                  padding: EdgeInsets.all(12),
+                  child: SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                )
+                    : IconButton(
+                  tooltip: 'Atjaunot uz Olaine',
+                  onPressed: _resetStartToDefault,
+                  icon: const Icon(Icons.refresh),
+                ),
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Aktīvais sākums: $_activeStartLabel',
+              style: const TextStyle(color: Colors.black54),
+            ),
+            if (_startSuggestions.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Container(
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.black12),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                constraints: const BoxConstraints(maxHeight: 200),
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: _startSuggestions.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  itemBuilder: (_, i) {
+                    final s = _startSuggestions[i];
+                    return ListTile(
+                      dense: true,
+                      title: Text(s.description),
+                      onTap: () => _selectStart(s),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+
+// ====================== END layout helper sections ======================
+
   @override
   Widget build(BuildContext context) {
-    final projectLabel = _currentProjectName == null ? 'Nav ielādēts projekts' : 'Projekts: $_currentProjectName';
+    print("BUILD PlannerInputScreen");
+
+    final projectLabel =
+    _currentProjectName == null ? 'Nav ielādēts projekts' : 'Projekts: $_currentProjectName';
 
     return Scaffold(
       appBar: AppBar(
@@ -455,6 +709,7 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
           children: [
             Text(projectLabel, style: const TextStyle(color: Colors.black54)),
             const SizedBox(height: 8),
+
             Row(
               children: [
                 Expanded(
@@ -481,15 +736,8 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
               ],
             ),
 
-            const SizedBox(height: 16),
-            _section('Datumi'),
-            OutlinedButton.icon(
-              onPressed: _pickDateRange,
-              icon: const Icon(Icons.date_range),
-              label: Text(_formatDateRange()),
-            ),
-            const SizedBox(height: 8),
-            Text('Dienu skaits: $_daysCount'),
+            // ✅ CHANGED: Datumi block -> helper
+            _buildDatesSection(),
 
             const SizedBox(height: 16),
             _section('Ceļojuma režīms'),
@@ -544,8 +792,11 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
               onChanged: (v) => setState(() => _maxKmPerDay = v),
             ),
 
+            // ✅ CHANGED: Start point block -> helper
+            _buildStartPointSection(),
+
             const SizedBox(height: 16),
-            _section ('Must-see (visā pasaulē)'),
+            _section('Must-see (visā pasaulē)'),
             TextField(
               controller: _mustSeeCtrl,
               onChanged: _onMustSeeChanged,
@@ -624,47 +875,6 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
       ),
     );
   }
-  void _estimateOptimalDays() {
-    if (_mustSee.length < 2) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Pievieno vismaz 2 must-see punktus')),
-      );
-      return;
-    }
-
-    // vienkāršs heuristisks aprēķins (pagaidu MVP algoritms)
-    double totalKm = 0;
-
-    for (int i = 1; i < _mustSee.length; i++) {
-      totalKm += _distanceKm(
-        _mustSee[i - 1].location,
-        _mustSee[i].location,
-      );
-    }
-
-    // pieskaitām arī turp-atpakaļ no starta
-    totalKm += _distanceKm(_startPoint, _mustSee.first.location);
-    totalKm += _distanceKm(_mustSee.last.location, _startPoint);
-
-    final days = (totalKm / _maxKmPerDay).ceil().clamp(1, 30);
-
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Ieteicamais ceļojuma ilgums'),
-        content: Text(
-          'Balstoties uz attālumiem starp izvēlētajiem must-see punktiem, '
-              'ieteicamais ilgums ir apmēram $days dienas.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('OK'),
-          ),
-        ],
-      ),
-    );
-  }
 
   Future<void> _generate() async {
     if (_start == null || _end == null) {
@@ -686,7 +896,8 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
         fitness: _fitness,
         party: _party,
         regionText: _regionText,
-        startPoint: _startPoint,
+        startPoint: _activeStartPoint,
+        returnToStart: _returnToStart,
         maxKmPerDay: _maxKmPerDay.round(),
         mustSee: List<Poi>.from(_mustSee),
       );
