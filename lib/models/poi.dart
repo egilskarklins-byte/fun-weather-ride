@@ -20,6 +20,9 @@ class Poi {
   final Set<PoiCategory> categories;
   final bool isIndoor;
 
+  /// ✅ true tikai auto-ģenerētai nakts pieturai movingTour režīmā
+  final bool isOvernightStop;
+
   const Poi({
     required this.id,
     required this.name,
@@ -27,5 +30,6 @@ class Poi {
     this.durationH = 1.5,
     this.categories = const {PoiCategory.mustSee},
     this.isIndoor = false,
+    this.isOvernightStop = false,
   });
 }

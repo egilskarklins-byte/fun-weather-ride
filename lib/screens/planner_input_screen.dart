@@ -902,20 +902,38 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
         mustSee: List<Poi>.from(_mustSee),
       );
 
+
+
+      final poiPool = _poiCatalog.catalogForRegion(_regionText);
+
+      setState(() => _loading = true);
+
       final weather = await _weatherApi.getForecastForTrip(
-        lat: input.startPoint.lat,
-        lon: input.startPoint.lon,
+        lat: _activeStartPoint.lat,
+        lon: _activeStartPoint.lon,
         startDate: input.startDate,
         daysCount: input.daysCount,
       );
 
-      final poiPool = _poiCatalog.catalogForRegion(_regionText);
+      print('WEATHER LOADED: ${weather.length} days');
 
       final plans = _engine.buildPlan(
         input: input,
         weatherByDay: weather,
         poiPool: poiPool,
       );
+
+      setState(() => _loading = false);
+
+// pāreja uz results screen
+      if (!mounted) return;
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ResultsScreen(plans: plans),
+        ),
+      );
+
 
       if (!mounted) return;
       await Navigator.of(context).push(

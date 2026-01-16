@@ -7,13 +7,13 @@ import '../models/poi.dart';
 class ResultsScreen extends StatelessWidget {
   final List<DayPlan> plans;
 
-  /// NEW (optional): lietotāja izvēlētais limits
+  /// optional limits
   final int? maxKmPerDay;
 
   const ResultsScreen({
     super.key,
     required this.plans,
-    this.maxKmPerDay, // <-- ja nepadod, nekas nelūzt
+    this.maxKmPerDay,
   });
 
   @override
@@ -46,7 +46,14 @@ class ResultsScreen extends StatelessWidget {
                   const SizedBox(height: 6),
                   Text('~${p.estKm} km • ~${p.estHours.toStringAsFixed(1)} h'),
 
-                  // 🔴 NEW: warning only when really exceeding maxKmPerDay
+                  if (p.weather != null) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      '☀ ${p.weather!.tempC}°C   💨 ${p.weather!.windMs} m/s   🌧 ${p.weather!.rainMm} mm',
+                      style: const TextStyle(fontSize: 13, color: Colors.black54),
+                    ),
+                  ],
+
                   if (overLimit) ...[
                     const SizedBox(height: 8),
                     Container(
@@ -77,6 +84,49 @@ class ResultsScreen extends StatelessWidget {
                   const Divider(height: 20),
 
                   ...p.stops.map((s) => Text('• ${s.name}')).toList(),
+
+                  // =============================
+                  // DEBUG OVERLAY
+                  // =============================
+                  if (p.debugWeatherScore != null ||
+                      (p.debugPenalties?.isNotEmpty ?? false) ||
+                      (p.debugMoved?.isNotEmpty ?? false)) ...[
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade100,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.grey.shade300),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'DEBUG',
+                            style: TextStyle(fontWeight: FontWeight.bold),
+                          ),
+
+                          if (p.debugWeatherScore != null)
+                            Text('Weather score: ${p.debugWeatherScore!.toStringAsFixed(2)}'),
+
+                          if (p.debugMoved != null && p.debugMoved!.isNotEmpty) ...[
+                            const SizedBox(height: 6),
+                            const Text('Moved POI:'),
+                            ...p.debugMoved!.map((e) => Text('  → $e')),
+                          ],
+
+                          if (p.debugPenalties != null && p.debugPenalties!.isNotEmpty) ...[
+                            const SizedBox(height: 6),
+                            const Text('Penalties:'),
+                            ...p.debugPenalties!.entries.map(
+                                  (e) => Text('  ${e.key}: ${e.value.toStringAsFixed(2)}'),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
 
                   const SizedBox(height: 12),
                   Align(
