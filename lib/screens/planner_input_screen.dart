@@ -6,7 +6,6 @@ import 'package:flutter/material.dart';
 import '../models/geo.dart';
 import '../models/poi.dart';
 import '../models/trip.dart';
-import '../models/plan.dart';
 import '../models/project.dart';
 
 import '../planner/planner_engine.dart';
@@ -14,7 +13,9 @@ import '../services/weather_api_service.dart';
 import '../services/places_service.dart';
 import '../services/poi_catalog_service.dart';
 import '../services/project_storage_service.dart';
+
 import 'results_screen.dart';
+import '../state/trip_controller.dart';
 
 class PlannerInputScreen extends StatefulWidget {
   const PlannerInputScreen({super.key});
@@ -24,47 +25,32 @@ class PlannerInputScreen extends StatefulWidget {
 }
 
 class _PlannerInputScreenState extends State<PlannerInputScreen> {
-  DateTime? _start;
-  DateTime? _end;
+  late final TripController _controller;
 
-  TripMode _mode = TripMode.singleBase;
-  TransportMode _transport = TransportMode.car;
-  FitnessLevel _fitness = FitnessLevel.medium;
-  TravelParty _party = TravelParty.solo;
-  bool _returnToStart = false;
-
-  // Default start (Olaine)
-  String _regionText = 'Olaine, Latvija';
-  LatLon _startPoint = const LatLon(56.7934, 23.9358);
-
-  double _maxKmPerDay = 180;
+  @override
+  void initState() {
+    super.initState();
+    _controller = TripController();
+  }
 
   final PlannerEngine _engine = PlannerEngine();
-
   final WeatherApiService _weatherApi = const WeatherApiService();
   final PlacesService _places = PlacesService();
   final PoiCatalogService _poiCatalog = PoiCatalogService();
-
   final ProjectStorageService _projectStorage = ProjectStorageService();
 
   bool _loading = false;
 
-  // -------------------- Start point (NEW) --------------------
+  // -------------------- Start point autocomplete --------------------
   final TextEditingController _startCtrl = TextEditingController();
-  LatLon? _customStartPoint;
-
   final List<PlaceSuggestion> _startSuggestions = [];
   Timer? _startDebounce;
   bool _loadingStartSuggest = false;
 
-  LatLon get _activeStartPoint => _customStartPoint ?? _startPoint;
-  String get _activeStartLabel => _startCtrl.text.trim().isEmpty
-      ? _regionText
-      : _startCtrl.text.trim();
-  // ------------------ END Start point ------------------
+  String get _activeStartLabel =>
+      _startCtrl.text.trim().isEmpty ? _controller.regionText : _startCtrl.text.trim();
 
-  // Must-see
-  final List<Poi> _mustSee = [];
+  // -------------------- Must-see --------------------
   final TextEditingController _mustSeeCtrl = TextEditingController();
 
   // Must-see autocomplete
@@ -77,11 +63,6 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
   String? _currentProjectId;
   String? _currentProjectName;
 
-  int get _daysCount {
-    if (_start == null || _end == null) return 3;
-    return _end!.difference(_start!).inDays + 1;
-  }
-
   @override
   void dispose() {
     _debounce?.cancel();
@@ -91,7 +72,7 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
     super.dispose();
   }
 
-  // -------------------- Distance + warning --------------------
+  // -------------------- Distance helpers + warning --------------------
   double _distanceKm(LatLon a, LatLon b) {
     const earthRadius = 6371.0;
     final dLat = _deg2rad(b.lat - a.lat);
@@ -108,22 +89,23 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
   }
 
   double _deg2rad(double deg) => deg * math.pi / 180.0;
-  void _warnIfTooFar(Poi poi) {
-    // limitu rēķinam "turp + atpakaļ" no AKTĪVĀ start point
-    final kmRoundTrip = (_distanceKm(_activeStartPoint, poi.location) * 2);
 
-    if (kmRoundTrip > _maxKmPerDay) {
+  void _warnIfTooFar(Poi poi) {
+    // limits rēķinam "turp + atpakaļ" no controller startPoint
+    final kmRoundTrip = (_distanceKm(_controller.startPoint, poi.location) * 2);
+
+    if (kmRoundTrip > _controller.maxKmPerDay) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            '⚠️ "${poi.name}" ir ~${kmRoundTrip.round()} km turp/atpakaļ no sākuma punkta — tas pārsniedz iestatīto ${_maxKmPerDay.round()} km/dienā.',
+            '⚠️ "${poi.name}" ir ~${kmRoundTrip.round()} km turp/atpakaļ no sākuma punkta — '
+                'tas pārsniedz iestatīto ${_controller.maxKmPerDay.round()} km/dienā.',
           ),
           duration: const Duration(seconds: 4),
         ),
       );
     }
   }
-  // ------------------ END Distance + warning ------------------
 
   // -------------------- Dates --------------------
   Future<void> _pickDateRange() async {
@@ -134,21 +116,22 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
       lastDate: now.add(const Duration(days: 365)),
       helpText: 'Izvēlies ceļojuma datumus',
     );
+
     if (picked != null) {
-      setState(() {
-        _start = picked.start;
-        _end = picked.end;
-      });
+      _controller.setDateRange(picked.start, picked.end);
     }
   }
 
   String _formatDateRange() {
-    if (_start == null || _end == null) return 'Izvēlies datumus';
+    final start = _controller.startDate;
+    final end = _controller.endDate;
+
+    if (start == null || end == null) return 'Izvēlies datumus';
+
     String two(int v) => v.toString().padLeft(2, '0');
-    return '${two(_start!.day)}.${two(_start!.month)}.${_start!.year} – '
-        '${two(_end!.day)}.${two(_end!.month)}.${_end!.year}';
+    return '${two(start.day)}.${two(start.month)}.${start.year} – '
+        '${two(end.day)}.${two(end.month)}.${end.year}';
   }
-  // ------------------ END Dates ------------------
 
   // -------------------- Start point autocomplete --------------------
   void _onStartChanged(String v) {
@@ -156,12 +139,11 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
     _startDebounce = Timer(const Duration(milliseconds: 250), () async {
       final q = v.trim();
       if (q.length < 2) {
-        if (mounted) {
-          setState(() {
-            _startSuggestions.clear();
-            _loadingStartSuggest = false;
-          });
-        }
+        if (!mounted) return;
+        setState(() {
+          _startSuggestions.clear();
+          _loadingStartSuggest = false;
+        });
         return;
       }
 
@@ -200,16 +182,16 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
       return;
     }
 
+    // controller kļūst par patiesības avotu
+    _controller.setStartPoint(poi.location, s.description);
+
     if (!mounted) return;
     setState(() {
-      _customStartPoint = poi.location;
-      _regionText = s.description;
       _startCtrl.text = s.description;
       _startSuggestions.clear();
     });
 
-    // UX: ja jau ir must-see, varam pārrēķināt brīdinājumus “implicīti”
-    if (_mustSee.isNotEmpty) {
+    if (_controller.mustSee.isNotEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Sākumpunkts uzstādīts: ${poi.name}'),
@@ -220,19 +202,17 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
   }
 
   void _resetStartToDefault() {
+    _controller.resetStartPoint();
+
     setState(() {
-      _customStartPoint = null;
       _startCtrl.clear();
       _startSuggestions.clear();
-      _regionText = 'Olaine, Latvija';
-      _startPoint = const LatLon(56.7934, 23.9358);
     });
 
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Sākumpunkts atjaunots uz Olaine')),
     );
   }
-  // ------------------ END Start point autocomplete ------------------
 
   // -------------------- Must-see autocomplete --------------------
   void _onMustSeeChanged(String v) {
@@ -278,7 +258,7 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
         return;
       }
 
-      if (_mustSee.any((p) => p.id == poi.id)) {
+      if (_controller.mustSee.any((p) => p.id == poi.id)) {
         if (!mounted) return;
         setState(() {
           _mustSeeCtrl.clear();
@@ -287,14 +267,14 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
         return;
       }
 
+      _controller.addMustSee(poi);
+
       if (!mounted) return;
       setState(() {
-        _mustSee.add(poi);
         _mustSeeCtrl.clear();
         _suggestions.clear();
       });
 
-      // warning pie pievienošanas
       _warnIfTooFar(poi);
     } finally {
       if (mounted) setState(() => _addingMustSee = false);
@@ -312,12 +292,14 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
       if (poi == null) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Vieta netika atrasta (mēģini izvēlēties no saraksta)')),
+          const SnackBar(
+            content: Text('Vieta netika atrasta (mēģini izvēlēties no saraksta)'),
+          ),
         );
         return;
       }
 
-      if (_mustSee.any((p) => p.id == poi.id)) {
+      if (_controller.mustSee.any((p) => p.id == poi.id)) {
         if (!mounted) return;
         setState(() {
           _mustSeeCtrl.clear();
@@ -326,24 +308,26 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
         return;
       }
 
+      _controller.addMustSee(poi);
+
       if (!mounted) return;
       setState(() {
-        _mustSee.add(poi);
         _mustSeeCtrl.clear();
         _suggestions.clear();
       });
 
-      // warning pie pievienošanas
       _warnIfTooFar(poi);
     } finally {
       if (mounted) setState(() => _addingMustSee = false);
     }
   }
-  // ------------------ END Must-see autocomplete ------------------
 
   Widget _section(String t) => Text(
     t,
-    style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+    style: Theme.of(context)
+        .textTheme
+        .titleMedium
+        ?.copyWith(fontWeight: FontWeight.bold),
   );
 
   Future<String?> _askProjectName({String? initial}) async {
@@ -360,7 +344,10 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
             ),
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(c), child: const Text('Atcelt')),
+            TextButton(
+              onPressed: () => Navigator.pop(c),
+              child: const Text('Atcelt'),
+            ),
             TextButton(
               onPressed: () => Navigator.pop(c, ctrl.text.trim()),
               child: const Text('Saglabāt'),
@@ -372,7 +359,7 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
   }
 
   Future<void> _saveProject() async {
-    if (_mustSee.isEmpty) {
+    if (_controller.mustSee.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Nav must-see ko saglabāt')),
       );
@@ -382,23 +369,10 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
     final name = await _askProjectName(initial: _currentProjectName);
     if (name == null || name.isEmpty) return;
 
-    final id = _currentProjectId ?? DateTime.now().millisecondsSinceEpoch.toString();
+    final id =
+        _currentProjectId ?? DateTime.now().millisecondsSinceEpoch.toString();
 
-    final p = Project(
-      id: id,
-      name: name,
-      startDate: _start,
-      endDate: _end,
-      mode: _mode,
-      transport: _transport,
-      fitness: _fitness,
-      party: _party,
-      regionText: _regionText,
-      startPoint: _activeStartPoint,
-      maxKmPerDay: _maxKmPerDay,
-      mustSee: List<Poi>.from(_mustSee),
-    );
-
+    final p = _controller.toProject(id: id, name: name);
     await _projectStorage.upsert(p);
 
     if (!mounted) return;
@@ -447,7 +421,10 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Text(
                 'Piezīme: lai dzēstu projektu, turpini zemāk ar “Dzēst projektu” (pēc ielādes).',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.black54),
+                style: Theme.of(context)
+                    .textTheme
+                    .bodySmall
+                    ?.copyWith(color: Colors.black54),
               ),
             ),
           ],
@@ -457,29 +434,14 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
 
     if (selected == null) return;
 
+    _controller.loadFromProject(selected);
+
     if (!mounted) return;
     setState(() {
       _currentProjectId = selected.id;
       _currentProjectName = selected.name;
 
-      _start = selected.startDate;
-      _end = selected.endDate;
-
-      _mode = selected.mode;
-      _transport = selected.transport;
-      _fitness = selected.fitness;
-      _party = selected.party;
-
-      _regionText = selected.regionText;
-      _startPoint = selected.startPoint;
-      _customStartPoint = null;
-      _startCtrl.text = selected.regionText;
-
-      _maxKmPerDay = selected.maxKmPerDay;
-
-      _mustSee
-        ..clear()
-        ..addAll(selected.mustSee);
+      _startCtrl.text = _controller.regionText;
 
       _mustSeeCtrl.clear();
       _suggestions.clear();
@@ -500,8 +462,14 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
         title: const Text('Dzēst projektu?'),
         content: Text('Dzēst: ${_currentProjectName ?? ''}'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Atcelt')),
-          TextButton(onPressed: () => Navigator.pop(c, true), child: const Text('Dzēst')),
+          TextButton(
+            onPressed: () => Navigator.pop(c, false),
+            child: const Text('Atcelt'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(c, true),
+            child: const Text('Dzēst'),
+          ),
         ],
       ),
     );
@@ -522,56 +490,31 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
   }
 
   void _newProjectClear() {
+    _controller.resetAll();
+
     setState(() {
       _currentProjectId = null;
       _currentProjectName = null;
 
-      _start = null;
-      _end = null;
-
-      _mode = TripMode.singleBase;
-      _transport = TransportMode.car;
-      _fitness = FitnessLevel.medium;
-      _party = TravelParty.solo;
-
-      _maxKmPerDay = 180;
-
-      _mustSee.clear();
       _mustSeeCtrl.clear();
       _suggestions.clear();
 
-      _customStartPoint = null;
       _startCtrl.clear();
       _startSuggestions.clear();
-
-      _regionText = 'Olaine, Latvija';
-      _startPoint = const LatLon(56.7934, 23.9358);
     });
   }
 
-  void _estimateOptimalDays() {
-    if (_mustSee.length < 2) {
+  Future<void> _showOptimalDaysDialog() async {
+    if (_controller.mustSee.length < 2) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Pievieno vismaz 2 must-see punktus')),
       );
       return;
     }
 
-    double totalKm = 0;
+    final days = _controller.estimateOptimalDays();
 
-    for (int i = 1; i < _mustSee.length; i++) {
-      totalKm += _distanceKm(
-        _mustSee[i - 1].location,
-        _mustSee[i].location,
-      );
-    }
-
-    // turp-atpakaļ no starta (AKTĪVĀ)
-    totalKm += _distanceKm(_activeStartPoint, _mustSee.first.location);
-    totalKm += _distanceKm(_mustSee.last.location, _activeStartPoint);
-
-    final days = (totalKm / _maxKmPerDay).ceil().clamp(1, 30);
-
+    if (!mounted) return;
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
@@ -590,7 +533,7 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
     );
   }
 
-  // ====================== NEW layout helper sections ======================
+  // ====================== Layout helper sections ======================
 
   Widget _buildDatesSection() {
     return Card(
@@ -608,13 +551,12 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
               label: Text(_formatDateRange()),
             ),
             const SizedBox(height: 8),
-            Text('Dienu skaits: $_daysCount'),
+            Text('Dienu skaits: ${_controller.daysCount}'),
           ],
         ),
       ),
     );
   }
-
 
   Widget _buildStartPointSection() {
     return Card(
@@ -682,202 +624,234 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
     );
   }
 
-
-// ====================== END layout helper sections ======================
+  // ====================== END layout helper sections ======================
 
   @override
   Widget build(BuildContext context) {
+    // (brīdinājums: print productionā nav ideāli, bet atstājam kā tev bija)
+    // ignore: avoid_print
     print("BUILD PlannerInputScreen");
 
-    final projectLabel =
-    _currentProjectName == null ? 'Nav ielādēts projekts' : 'Projekts: $_currentProjectName';
+    final projectLabel = _currentProjectName == null
+        ? 'Nav ielādēts projekts'
+        : 'Projekts: $_currentProjectName';
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Plānot maršrutu'),
-        actions: [
-          IconButton(
-            tooltip: 'Jauns projekts',
-            onPressed: _newProjectClear,
-            icon: const Icon(Icons.note_add),
-          ),
-        ],
-      ),
-      body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            Text(projectLabel, style: const TextStyle(color: Colors.black54)),
-            const SizedBox(height: 8),
-
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: _saveProject,
-                    icon: const Icon(Icons.save),
-                    label: const Text('Saglabāt'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: _loadProject,
-                    icon: const Icon(Icons.folder_open),
-                    label: const Text('Ielādēt'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                IconButton(
-                  tooltip: 'Dzēst ielādēto projektu',
-                  onPressed: _currentProjectId == null ? null : _deleteCurrentProject,
-                  icon: const Icon(Icons.delete_outline),
-                ),
-              ],
-            ),
-
-            // ✅ CHANGED: Datumi block -> helper
-            _buildDatesSection(),
-
-            const SizedBox(height: 16),
-            _section('Ceļojuma režīms'),
-            DropdownButtonFormField<TripMode>(
-              initialValue: _mode,
-              items: const [
-                DropdownMenuItem(value: TripMode.singleBase, child: Text('Single base')),
-                DropdownMenuItem(value: TripMode.movingTour, child: Text('Moving tour')),
-              ],
-              onChanged: (v) => setState(() => _mode = v ?? TripMode.singleBase),
-            ),
-
-            const SizedBox(height: 16),
-            _section('Profils'),
-            DropdownButtonFormField<FitnessLevel>(
-              initialValue: _fitness,
-              items: const [
-                DropdownMenuItem(value: FitnessLevel.low, child: Text('Zema')),
-                DropdownMenuItem(value: FitnessLevel.medium, child: Text('Vidēja')),
-                DropdownMenuItem(value: FitnessLevel.high, child: Text('Augsta')),
-              ],
-              onChanged: (v) => setState(() => _fitness = v ?? FitnessLevel.medium),
-            ),
-            const SizedBox(height: 8),
-            DropdownButtonFormField<TravelParty>(
-              initialValue: _party,
-              items: const [
-                DropdownMenuItem(value: TravelParty.solo, child: Text('Solo')),
-                DropdownMenuItem(value: TravelParty.couple, child: Text('Pāris')),
-                DropdownMenuItem(value: TravelParty.family, child: Text('Ģimene')),
-              ],
-              onChanged: (v) => setState(() => _party = v ?? TravelParty.solo),
-            ),
-
-            const SizedBox(height: 16),
-            _section('Transports un km'),
-            DropdownButtonFormField<TransportMode>(
-              initialValue: _transport,
-              items: const [
-                DropdownMenuItem(value: TransportMode.car, child: Text('Auto')),
-                DropdownMenuItem(value: TransportMode.bike, child: Text('Velo')),
-              ],
-              onChanged: (v) => setState(() => _transport = v ?? TransportMode.car),
-            ),
-            const SizedBox(height: 8),
-            Text('Max km dienā: ${_maxKmPerDay.round()}'),
-            Slider(
-              min: 30,
-              max: _transport == TransportMode.bike ? 150 : 500,
-              divisions: 20,
-              value: _maxKmPerDay.clamp(30, _transport == TransportMode.bike ? 150 : 500),
-              onChanged: (v) => setState(() => _maxKmPerDay = v),
-            ),
-
-            // ✅ CHANGED: Start point block -> helper
-            _buildStartPointSection(),
-
-            const SizedBox(height: 16),
-            _section('Must-see (visā pasaulē)'),
-            TextField(
-              controller: _mustSeeCtrl,
-              onChanged: _onMustSeeChanged,
-              decoration: InputDecoration(
-                border: const OutlineInputBorder(),
-                hintText: 'Ieraksti vietas nosaukumu un izvēlies no saraksta',
-                suffixIcon: _loadingSuggest
-                    ? const Padding(
-                  padding: EdgeInsets.all(12),
-                  child: SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                )
-                    : (_addingMustSee ? const Icon(Icons.hourglass_top) : const Icon(Icons.search)),
-              ),
-            ),
-            if (_suggestions.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Container(
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.black12),
-                  borderRadius: BorderRadius.circular(8),
-                  color: Theme.of(context).cardColor,
-                ),
-                constraints: const BoxConstraints(maxHeight: 220),
-                child: ListView.separated(
-                  shrinkWrap: true,
-                  itemCount: _suggestions.length,
-                  separatorBuilder: (_, __) => const Divider(height: 1),
-                  itemBuilder: (_, i) {
-                    final s = _suggestions[i];
-                    return ListTile(
-                      dense: true,
-                      title: Text(s.description),
-                      onTap: _addingMustSee ? null : () => _addSuggestion(s),
-                    );
-                  },
-                ),
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        return Scaffold(
+          appBar: AppBar(
+            title: const Text('Plānot maršrutu'),
+            actions: [
+              IconButton(
+                tooltip: 'Jauns projekts',
+                onPressed: _newProjectClear,
+                icon: const Icon(Icons.note_add),
               ),
             ],
-            const SizedBox(height: 8),
-            ElevatedButton(
-              onPressed: _addingMustSee ? null : _addMustSeeFallbackByText,
-              child: const Text('Pievienot must-see'),
-            ),
+          ),
+          body: SafeArea(
+            child: ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                Text(projectLabel,
+                    style: const TextStyle(color: Colors.black54)),
+                const SizedBox(height: 8),
 
-            Wrap(
-              spacing: 8,
-              children: _mustSee
-                  .map((p) => Chip(
-                label: Text(p.name),
-                onDeleted: () => setState(() => _mustSee.remove(p)),
-              ))
-                  .toList(),
-            ),
-            const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: _saveProject,
+                        icon: const Icon(Icons.save),
+                        label: const Text('Saglabāt'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: _loadProject,
+                        icon: const Icon(Icons.folder_open),
+                        label: const Text('Ielādēt'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      tooltip: 'Dzēst ielādēto projektu',
+                      onPressed: _currentProjectId == null
+                          ? null
+                          : _deleteCurrentProject,
+                      icon: const Icon(Icons.delete_outline),
+                    ),
+                  ],
+                ),
 
-            OutlinedButton.icon(
-              onPressed: _mustSee.isEmpty ? null : _estimateOptimalDays,
-              icon: const Icon(Icons.auto_graph),
-              label: const Text('Aprēķināt optimālo dienu skaitu'),
-            ),
+                _buildDatesSection(),
 
-            const SizedBox(height: 24),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: _loading ? null : _generate,
-                child: _loading ? const CircularProgressIndicator() : const Text('Ģenerēt plānu'),
-              ),
+                const SizedBox(height: 16),
+                _section('Ceļojuma režīms'),
+                DropdownButtonFormField<TripMode>(
+                  value: _controller.mode,
+                  items: const [
+                    DropdownMenuItem(
+                        value: TripMode.singleBase, child: Text('Single base')),
+                    DropdownMenuItem(
+                        value: TripMode.movingTour, child: Text('Moving tour')),
+                  ],
+                  onChanged: (v) =>
+                      _controller.setMode(v ?? TripMode.singleBase),
+                ),
+
+                const SizedBox(height: 16),
+                _section('Profils'),
+                DropdownButtonFormField<FitnessLevel>(
+                  value: _controller.fitness,
+                  items: const [
+                    DropdownMenuItem(value: FitnessLevel.low, child: Text('Zema')),
+                    DropdownMenuItem(
+                        value: FitnessLevel.medium, child: Text('Vidēja')),
+                    DropdownMenuItem(
+                        value: FitnessLevel.high, child: Text('Augsta')),
+                  ],
+                  onChanged: (v) =>
+                      _controller.setFitness(v ?? FitnessLevel.medium),
+                ),
+                const SizedBox(height: 8),
+                DropdownButtonFormField<TravelParty>(
+                  value: _controller.party,
+                  items: const [
+                    DropdownMenuItem(
+                        value: TravelParty.solo, child: Text('Solo')),
+                    DropdownMenuItem(
+                        value: TravelParty.couple, child: Text('Pāris')),
+                    DropdownMenuItem(
+                        value: TravelParty.family, child: Text('Ģimene')),
+                  ],
+                  onChanged: (v) =>
+                      _controller.setParty(v ?? TravelParty.solo),
+                ),
+
+                const SizedBox(height: 16),
+                _section('Transports un km'),
+                DropdownButtonFormField<TransportMode>(
+                  value: _controller.transport,
+                  items: const [
+                    DropdownMenuItem(value: TransportMode.car, child: Text('Auto')),
+                    DropdownMenuItem(value: TransportMode.bike, child: Text('Velo')),
+                  ],
+                  onChanged: (v) =>
+                      _controller.setTransport(v ?? TransportMode.car),
+                ),
+                const SizedBox(height: 8),
+                Text('Max km dienā: ${_controller.maxKmPerDay.round()}'),
+                Slider(
+                  min: 30,
+                  max: _controller.transport == TransportMode.bike ? 150 : 500,
+                  divisions: 20,
+                  value: _controller.maxKmPerDay.clamp(
+                    30,
+                    _controller.transport == TransportMode.bike ? 150 : 500,
+                  ),
+                  onChanged: (v) => _controller.setMaxKmPerDay(v),
+                ),
+
+                _buildStartPointSection(),
+
+                const SizedBox(height: 16),
+                _section('Must-see (visā pasaulē)'),
+                TextField(
+                  controller: _mustSeeCtrl,
+                  onChanged: _onMustSeeChanged,
+                  decoration: InputDecoration(
+                    border: const OutlineInputBorder(),
+                    hintText: 'Ieraksti vietas nosaukumu un izvēlies no saraksta',
+                    suffixIcon: _loadingSuggest
+                        ? const Padding(
+                      padding: EdgeInsets.all(12),
+                      child: SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    )
+                        : (_addingMustSee
+                        ? const Icon(Icons.hourglass_top)
+                        : const Icon(Icons.search)),
+                  ),
+                ),
+                if (_suggestions.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Container(
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.black12),
+                      borderRadius: BorderRadius.circular(8),
+                      color: Theme.of(context).cardColor,
+                    ),
+                    constraints: const BoxConstraints(maxHeight: 220),
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: _suggestions.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (_, i) {
+                        final s = _suggestions[i];
+                        return ListTile(
+                          dense: true,
+                          title: Text(s.description),
+                          onTap: _addingMustSee ? null : () => _addSuggestion(s),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 8),
+                ElevatedButton(
+                  onPressed: _addingMustSee ? null : _addMustSeeFallbackByText,
+                  child: const Text('Pievienot must-see'),
+                ),
+
+                Wrap(
+                  spacing: 8,
+                  children: _controller.mustSee
+                      .map(
+                        (p) => Chip(
+                      label: Text(p.name),
+                      onDeleted: () => _controller.removeMustSee(p),
+                    ),
+                  )
+                      .toList(),
+                ),
+
+                const SizedBox(height: 12),
+
+                OutlinedButton.icon(
+                  onPressed: _controller.mustSee.isEmpty ? null : _showOptimalDaysDialog,
+                  icon: const Icon(Icons.auto_graph),
+                  label: const Text('Aprēķināt optimālo dienu skaitu'),
+                ),
+
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: _loading ? null : _generate,
+                    child: _loading
+                        ? const CircularProgressIndicator()
+                        : const Text('Ģenerēt plānu'),
+                  ),
+                ),
+              ],
             ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 
   Future<void> _generate() async {
-    if (_start == null || _end == null) {
+    final start = _controller.startDate;
+    final end = _controller.endDate;
+
+    if (start == null || end == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Izvēlies datumus')),
       );
@@ -888,18 +862,18 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
 
     try {
       final input = TripInput(
-        startDate: _start!,
-        endDate: _end!,
-        daysCount: _daysCount,
-        mode: _mode,
-        transport: _transport,
-        fitness: _fitness,
-        party: _party,
-        regionText: _regionText,
-        startPoint: _activeStartPoint,
-        returnToStart: _returnToStart,
-        maxKmPerDay: _maxKmPerDay.round(),
-        mustSee: List<Poi>.from(_mustSee),
+        startDate: start,
+        endDate: end,
+        daysCount: _controller.daysCount,
+        mode: _controller.mode,
+        transport: _controller.transport,
+        fitness: _controller.fitness,
+        party: _controller.party,
+        regionText: _controller.regionText,
+        startPoint: _controller.startPoint,
+        returnToStart: _controller.returnToStart,
+        maxKmPerDay: _controller.maxKmPerDay.round(),
+        mustSee: List<Poi>.from(_controller.mustSee),
       );
 
       final weather = await _weatherApi.getForecastForTrip(
@@ -909,7 +883,7 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
         daysCount: input.daysCount,
       );
 
-      final poiPool = _poiCatalog.catalogForRegion(_regionText);
+      final poiPool = _poiCatalog.catalogForRegion(_controller.regionText);
 
       final plans = _engine.buildPlan(
         input: input,
@@ -922,10 +896,12 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
         MaterialPageRoute(
           builder: (_) => ResultsScreen(
             plans: plans,
+            input: input, // <-- ŠIS IR GALVENAIS LABOJUMS
             maxKmPerDay: input.maxKmPerDay,
           ),
         ),
       );
+
     } finally {
       if (mounted) setState(() => _loading = false);
     }

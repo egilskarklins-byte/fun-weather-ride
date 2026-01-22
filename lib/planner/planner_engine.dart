@@ -1,4 +1,5 @@
 import 'dart:math';
+
 import '../models/geo.dart';
 import '../models/plan.dart';
 import '../models/poi.dart';
@@ -29,6 +30,129 @@ class PlannerEngine {
   List<DateTime> _datesBetween(DateTime start, int daysCount) {
     final d0 = DateTime(start.year, start.month, start.day);
     return List.generate(daysCount, (i) => d0.add(Duration(days: i)));
+  }
+
+  // ===================== REPLAN (NEW, DOES NOT REMOVE ANYTHING) =====================
+  /// Re-plan from a specific day (inclusive) using new weather forecast.
+  ///
+  /// - Keeps existing plans before [fromDate] unchanged.
+  /// - Rebuilds plans from [fromDate] forward using [newWeatherByDay].
+  /// - Excludes already-visited POIs (based on existing plans before [fromDate] + [visitedPoiIds]).
+  /// - Also excludes [skippedPoiIds] (user marked as skipped).
+  /// - For movingTour, you can pass [currentLocation] to continue from real location.
+  ///
+  /// IMPORTANT: This does NOT modify buildPlan() or your data models.
+  List<DayPlan> replanFromDay({
+    required TripInput originalInput,
+    required List<DayPlan> existingPlans,
+    required DateTime fromDate,
+    required List<WeatherDay> newWeatherByDay,
+    required List<Poi> poiPool,
+    Set<String> visitedPoiIds = const {},
+    Set<String> skippedPoiIds = const {},
+    LatLon? currentLocation,
+  }) {
+    if (existingPlans.isEmpty) return [];
+
+    final fromKey = _dayKey(fromDate);
+
+    // find index in existingPlans by date
+    int idx = -1;
+    for (int i = 0; i < existingPlans.length; i++) {
+      if (_dayKey(existingPlans[i].date) == fromKey) {
+        idx = i;
+        break;
+      }
+    }
+
+    // If the date is not found, do nothing (safe behavior)
+    if (idx < 0) return existingPlans;
+
+    // Keep previous days unchanged
+    final prefix = existingPlans.sublist(0, idx);
+
+    // determine remaining day count
+    final remainingDays = max(0, originalInput.daysCount - idx);
+    if (remainingDays == 0) return prefix;
+
+    // collect what was already visited in prefix (must-see + any stop that is not a base/return marker)
+    final alreadyVisited = <String>{...visitedPoiIds};
+    alreadyVisited.addAll(_collectVisitedPoiIdsFromPlans(prefix));
+
+    // remaining must-see = original must-see minus visited/skipped
+    final remainingMustSee = originalInput.mustSee.where((p) {
+      if (alreadyVisited.contains(p.id)) return false;
+      if (skippedPoiIds.contains(p.id)) return false;
+      return true;
+    }).toList();
+
+    // choose replanning start point
+    LatLon replStartPoint;
+    if (originalInput.mode == TripMode.singleBase) {
+      // singleBase remains the same base
+      replStartPoint = originalInput.startPoint;
+    } else {
+      // movingTour: continue from real location if provided, otherwise use planned base of that day,
+      // otherwise fallback to last stop of previous day, otherwise original start
+      final plannedBase = existingPlans[idx].base; // LatLon vai LatLon? (atkarīgs no modeļa)
+      final fallback = prefix.isNotEmpty
+          ? prefix.last.stops.last.location
+          : originalInput.startPoint;
+
+      replStartPoint = currentLocation ?? (plannedBase ?? fallback);
+    }
+
+    // recompute start/end for the remaining segment
+    final newStartDate = _dayKey(existingPlans[idx].date);
+    final newEndDate = newStartDate.add(Duration(days: remainingDays - 1));
+
+    final newInput = TripInput(
+      startDate: newStartDate,
+      endDate: newEndDate,
+      daysCount: remainingDays,
+      mode: originalInput.mode,
+      transport: originalInput.transport,
+      fitness: originalInput.fitness,
+      party: originalInput.party,
+      regionText: originalInput.regionText,
+      startPoint: replStartPoint,
+      returnToStart: originalInput.returnToStart,
+      maxKmPerDay: originalInput.maxKmPerDay,
+      // keep your hours logic as is
+      mustSee: remainingMustSee,
+    );
+
+    // build new segment
+    final newSegment = buildPlan(
+      input: newInput,
+      weatherByDay: newWeatherByDay,
+      poiPool: poiPool,
+    );
+
+    // stitch together
+    return [...prefix, ...newSegment];
+  }
+
+  Set<String> _collectVisitedPoiIdsFromPlans(List<DayPlan> plans) {
+    final out = <String>{};
+
+    for (final d in plans) {
+      // mustSee
+      for (final p in d.mustSee) {
+        out.add(p.id);
+      }
+
+      // stops - filter out synthetic ids we create in engine
+      for (final s in d.stops) {
+        final id = s.id;
+        if (id.startsWith('base_')) continue;
+        if (id.startsWith('base_end_')) continue;
+        if (id.startsWith('return_home_')) continue;
+        out.add(id);
+      }
+    }
+
+    return out;
   }
 
   // ===================== PROFILE IMPACT =====================
@@ -115,21 +239,47 @@ class PlannerEngine {
           input.fitnessMultiplier() *
           _partyHoursMultiplier(input.party);
 
-      double maxKm =
-          input.maxKmPerDay.toDouble() * _partyKmMultiplier(input.party);
+      double maxKm = input.maxKmPerDay.toDouble() * _partyKmMultiplier(input.party);
 
       final maxStops = _maxStopsForProfile(input);
 
-      // ====== WEATHER penalty ======
+      final todaysMust = List<Poi>.from(
+        (i < orderedClusters.length) ? orderedClusters[i] : <Poi>[],
+      );
+
+      if (weather != null) {
+        if (weather.isStormy) {
+          // ļoti slikts laiks → atstājam tikai 1 must-see
+          while (todaysMust.length > 1) {
+            todaysMust.removeLast();
+          }
+        } else if (weather.isRainy) {
+          // lietus → samazinām must-see skaitu
+          if (todaysMust.length > 1) {
+            todaysMust.removeLast();
+          }
+        }
+      }
+
+
+
+// ====== WEATHER penalty ======
       if (weather != null) {
         if (weather.isRainy || weather.isStormy) {
           maxHours *= 0.75;
           maxKm *= 0.80;
+
+          // 👇 ŠIS ir kritiskais replanning efekts
+          if (todaysMust.length > 1) {
+            todaysMust.removeLast();
+          }
         }
+
         if (weather.isCold) {
           maxHours *= 0.90;
           maxKm *= 0.90;
         }
+
         if (weather.windMs >= 12) {
           maxHours *= 0.90;
           maxKm *= 0.90;
@@ -139,17 +289,34 @@ class PlannerEngine {
       maxHours = max(3.0, maxHours);
       maxKm = max(30.0, maxKm);
 
-      final todaysMust =
-      (i < orderedClusters.length) ? orderedClusters[i] : <Poi>[];
+      // ================= WEATHER-AWARE must-see ordering (NEW) =================
+      // Lietus dienā: indoor pa priekšu. Sausā dienā: outdoor pa priekšu.
+      final adjustedMust = List<Poi>.from(todaysMust);
+      if (weather != null) {
+        if (weather.isRainy || weather.isStormy) {
+          adjustedMust.sort((a, b) {
+            if (a.isIndoor && !b.isIndoor) return -1;
+            if (!a.isIndoor && b.isIndoor) return 1;
+            return 0;
+          });
+        } else {
+          adjustedMust.sort((a, b) {
+            if (!a.isIndoor && b.isIndoor) return -1;
+            if (a.isIndoor && !b.isIndoor) return 1;
+            return 0;
+          });
+        }
+      }
+      // =======================================================================
 
       final center = centroid([
         currentBase,
-        ...todaysMust.map((e) => e.location),
+        ...adjustedMust.map((e) => e.location),
       ]);
 
       final stops = <Poi>[
         Poi(id: 'base_$i', name: 'Sākums', location: currentBase),
-        ...todaysMust,
+        ...adjustedMust,
       ];
 
       // Single base vienmēr atgriežas tajā pašā dienā
@@ -190,13 +357,13 @@ class PlannerEngine {
           date: date,
           theme: DayTheme.mixed,
           base: currentBase,
-          mustSee: todaysMust,
+          mustSee: adjustedMust,
           stops: filled,
           estKm: estKm,
           estHours: estHours,
           weather: weather,
           summary:
-          'must-see: ${todaysMust.length} • ~${estHours.toStringAsFixed(1)} h • ~$estKm km',
+          'must-see: ${adjustedMust.length} • ~${estHours.toStringAsFixed(1)} h • ~$estKm km',
         ),
       );
 
@@ -208,7 +375,6 @@ class PlannerEngine {
       }
     }
 
-    // ✅ ŠIS BIJA TEV SALAUZTS: return jābūt ĀRĀ no for cikla
     return plans;
   }
 
@@ -422,4 +588,4 @@ class PlannerEngine {
     }
     return best;
   }
-}
+} // <-- ŠIS AIZVER class PlannerEngine

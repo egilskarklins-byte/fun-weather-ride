@@ -3,31 +3,65 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../models/plan.dart';
 import '../models/poi.dart';
+import '../planner/planner_engine.dart';
+import '../services/weather_api_service.dart';
+import '../services/poi_catalog_service.dart';
+import '../models/trip.dart';
 
-class ResultsScreen extends StatelessWidget {
+class ResultsScreen extends StatefulWidget {
   final List<DayPlan> plans;
-
-  /// NEW (optional): lietotāja izvēlētais limits
+  final TripInput input;
   final int? maxKmPerDay;
 
   const ResultsScreen({
     super.key,
     required this.plans,
-    this.maxKmPerDay, // <-- ja nepadod, nekas nelūzt
+    required this.input,
+    this.maxKmPerDay,
   });
+
+  @override
+  State<ResultsScreen> createState() => _ResultsScreenState();
+}
+
+class _ResultsScreenState extends State<ResultsScreen> {
+  late List<DayPlan> _plans;
+
+  final Set<String> _visited = {};
+  final Set<String> _skipped = {};
+
+  final PlannerEngine _engine = PlannerEngine();
+  final WeatherApiService _weatherApi = const WeatherApiService();
+  final PoiCatalogService _poiCatalog = PoiCatalogService();
+
+  bool _replanning = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _plans = List.of(widget.plans);
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Ceļojuma plāns')),
+      appBar: AppBar(
+        title: const Text('Ceļojuma plāns'),
+        actions: [
+          IconButton(
+            tooltip: 'Pārrēķināt no šodienas',
+            icon: const Icon(Icons.refresh),
+            onPressed: _replanning ? null : _replanFromToday,
+          ),
+        ],
+      ),
       body: ListView.builder(
         padding: const EdgeInsets.all(16),
-        itemCount: plans.length,
+        itemCount: _plans.length,
         itemBuilder: (context, i) {
-          final p = plans[i];
-
-          final bool overLimit =
-              maxKmPerDay != null && p.estKm > maxKmPerDay!;
+          final p = _plans[i];
+          final overLimit =
+              widget.maxKmPerDay != null && p.estKm > widget.maxKmPerDay!;
 
           return Card(
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -43,10 +77,8 @@ class ResultsScreen extends StatelessWidget {
                   const SizedBox(height: 6),
 
                   Text(p.summary),
-                  const SizedBox(height: 6),
                   Text('~${p.estKm} km • ~${p.estHours.toStringAsFixed(1)} h'),
 
-                  // 🔴 NEW: warning only when really exceeding maxKmPerDay
                   if (overLimit) ...[
                     const SizedBox(height: 8),
                     Container(
@@ -56,27 +88,51 @@ class ResultsScreen extends StatelessWidget {
                         borderRadius: BorderRadius.circular(10),
                         border: Border.all(color: Colors.red.shade300),
                       ),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Icon(Icons.warning_amber_rounded, color: Colors.red),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              'Šis maršruts pārsniedz iestatīto limitu '
-                                  '(${maxKmPerDay} km/dienā), jo must-see vietas '
-                                  'atrodas pārāk tālu viena no otras.',
-                              style: const TextStyle(fontSize: 13),
-                            ),
-                          ),
-                        ],
+                      child: const Text(
+                        '⚠️ Dienas slodze pārsniedz iestatīto limitu',
+                        style: TextStyle(fontSize: 13),
                       ),
                     ),
                   ],
 
                   const Divider(height: 20),
 
-                  ...p.stops.map((s) => Text('• ${s.name}')).toList(),
+                  ...p.stops.map((s) {
+                    final isVisited = _visited.contains(s.id);
+                    final isSkipped = _skipped.contains(s.id);
+
+                    return Row(
+                      children: [
+                        Expanded(child: Text('• ${s.name}')),
+                        IconButton(
+                          tooltip: 'Apmeklēts',
+                          icon: Icon(
+                            Icons.check_circle,
+                            color: isVisited ? Colors.green : Colors.grey,
+                          ),
+                          onPressed: () {
+                            setState(() {
+                              _visited.add(s.id);
+                              _skipped.remove(s.id);
+                            });
+                          },
+                        ),
+                        IconButton(
+                          tooltip: 'Izlaists',
+                          icon: Icon(
+                            Icons.cancel,
+                            color: isSkipped ? Colors.red : Colors.grey,
+                          ),
+                          onPressed: () {
+                            setState(() {
+                              _skipped.add(s.id);
+                              _visited.remove(s.id);
+                            });
+                          },
+                        ),
+                      ],
+                    );
+                  }),
 
                   const SizedBox(height: 12),
                   Align(
@@ -95,6 +151,56 @@ class ResultsScreen extends StatelessWidget {
       ),
     );
   }
+
+  // ================= REPLAN =================
+
+  Future<void> _replanFromToday() async {
+    setState(() => _replanning = true);
+
+    try {
+      final today = DateTime.now();
+
+      final weather = await _weatherApi.getForecastForTrip(
+        lat: widget.input.startPoint.lat,
+        lon: widget.input.startPoint.lon,
+        startDate: today,
+        daysCount: widget.input.daysCount,
+      );
+
+      final poiPool = _poiCatalog.catalogForRegion(widget.input.regionText);
+
+      // Drošs fallback, ja replanFromDay vēl nav implementēts
+      List<DayPlan> newPlans;
+      try {
+        newPlans = _engine.replanFromDay(
+          originalInput: widget.input,
+          existingPlans: _plans,
+          fromDate: today,
+          newWeatherByDay: weather,
+          poiPool: poiPool,
+          visitedPoiIds: _visited,
+          skippedPoiIds: _skipped,
+        );
+      } catch (_) {
+        // Ja nav vēl replanFromDay, vienkārši nepārrēķinam
+        newPlans = _plans;
+      }
+
+      if (!mounted) return;
+
+      setState(() {
+        _plans = newPlans;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Plāns pārrēķināts')),
+      );
+    } finally {
+      if (mounted) setState(() => _replanning = false);
+    }
+  }
+
+  // ================= UTILS =================
 
   String _d(DateTime d) =>
       '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';

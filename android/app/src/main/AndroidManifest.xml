@@ -1,6 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application
-        android:label="fun_weather_ride"
+        android:label="fun_weather_V1"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
