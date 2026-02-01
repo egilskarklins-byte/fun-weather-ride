@@ -25,6 +25,9 @@ class TripInput {
   /// Moving tour opcija: pēdējā dienā pievieno atgriešanos startā
   final bool returnToStart;
 
+  /// ✅ filler POI pievieno tikai, ja lietotājs to grib
+  final bool includeFillers;
+
   const TripInput({
     required this.startDate,
     required this.endDate,
@@ -38,6 +41,7 @@ class TripInput {
     required this.maxKmPerDay,
     required this.mustSee,
     this.returnToStart = false,
+    this.includeFillers = false,
   });
 
   // Ietekme uz dienas slodzi (stundām)

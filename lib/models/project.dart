@@ -21,6 +21,12 @@ class Project {
 
   final double maxKmPerDay;
 
+  /// Moving tour opcija: pēdējā dienā pievieno atgriešanos startā
+  final bool returnToStart;
+
+  /// filler POI pievieno tikai, ja lietotājs to grib
+  final bool includeFillers;
+
   final List<Poi> mustSee;
 
   Project({
@@ -34,6 +40,8 @@ class Project {
     required this.startPoint,
     required this.maxKmPerDay,
     required this.mustSee,
+    this.returnToStart = false,
+    this.includeFillers = false,
     this.startDate,
     this.endDate,
   });
@@ -50,6 +58,8 @@ class Project {
     'regionText': regionText,
     'startPoint': {'lat': startPoint.lat, 'lon': startPoint.lon},
     'maxKmPerDay': maxKmPerDay,
+    'returnToStart': returnToStart,
+    'includeFillers': includeFillers,
     'mustSee': mustSee
         .map((p) => {
       'id': p.id,
@@ -61,11 +71,12 @@ class Project {
       'categories': p.categories.map((c) => c.name).toList(),
     })
         .toList(),
-    'v': 1,
+    'v': 2,
   };
 
   static Project fromJson(Map<String, dynamic> json) {
-    DateTime? dt(String? s) => (s == null || s.isEmpty) ? null : DateTime.tryParse(s);
+    DateTime? dt(String? s) =>
+        (s == null || s.isEmpty) ? null : DateTime.tryParse(s);
 
     T enumByName<T extends Enum>(List<T> values, String name, T fallback) {
       return values.firstWhere(
@@ -79,7 +90,8 @@ class Project {
     final must = (json['mustSee'] as List? ?? const [])
         .cast<Map<String, dynamic>>()
         .map((e) {
-      final catsRaw = (e['categories'] as List? ?? const []).map((x) => x.toString()).toList();
+      final catsRaw =
+      (e['categories'] as List? ?? const []).map((x) => x.toString()).toList();
       final cats = <PoiCategory>{};
       for (final c in catsRaw) {
         final hit = PoiCategory.values.where((v) => v.name == c).toList();
@@ -105,16 +117,34 @@ class Project {
       name: (json['name'] ?? '').toString(),
       startDate: dt(json['startDate']?.toString()),
       endDate: dt(json['endDate']?.toString()),
-      mode: enumByName(TripMode.values, (json['mode'] ?? TripMode.singleBase.name).toString(), TripMode.singleBase),
-      transport: enumByName(TransportMode.values, (json['transport'] ?? TransportMode.car.name).toString(), TransportMode.car),
-      fitness: enumByName(FitnessLevel.values, (json['fitness'] ?? FitnessLevel.medium.name).toString(), FitnessLevel.medium),
-      party: enumByName(TravelParty.values, (json['party'] ?? TravelParty.solo.name).toString(), TravelParty.solo),
+      mode: enumByName(
+        TripMode.values,
+        (json['mode'] ?? TripMode.singleBase.name).toString(),
+        TripMode.singleBase,
+      ),
+      transport: enumByName(
+        TransportMode.values,
+        (json['transport'] ?? TransportMode.car.name).toString(),
+        TransportMode.car,
+      ),
+      fitness: enumByName(
+        FitnessLevel.values,
+        (json['fitness'] ?? FitnessLevel.medium.name).toString(),
+        FitnessLevel.medium,
+      ),
+      party: enumByName(
+        TravelParty.values,
+        (json['party'] ?? TravelParty.solo.name).toString(),
+        TravelParty.solo,
+      ),
       regionText: (json['regionText'] ?? 'Rīga un apkārtne, Latvija').toString(),
       startPoint: LatLon(
         ((sp?['lat'] as num?) ?? 56.9496).toDouble(),
         ((sp?['lon'] as num?) ?? 24.1052).toDouble(),
       ),
       maxKmPerDay: ((json['maxKmPerDay'] as num?) ?? 180).toDouble(),
+      returnToStart: (json['returnToStart'] as bool?) ?? false,
+      includeFillers: (json['includeFillers'] as bool?) ?? false,
       mustSee: must,
     );
   }
@@ -123,5 +153,8 @@ class Project {
       jsonEncode(projects.map((p) => p.toJson()).toList());
 
   static List<Project> decodeList(String raw) =>
-      (jsonDecode(raw) as List).cast<Map<String, dynamic>>().map(Project.fromJson).toList();
+      (jsonDecode(raw) as List)
+          .cast<Map<String, dynamic>>()
+          .map(Project.fromJson)
+          .toList();
 }

@@ -512,7 +512,34 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
       return;
     }
 
-    final days = _controller.estimateOptimalDays();
+    final weather = await _weatherApi.getForecastForTrip(
+      lat: _controller.startPoint.lat,
+      lon: _controller.startPoint.lon,
+      startDate: _controller.startDate!,
+      daysCount: 30, // dodam rezervi, lai engine var meklēt
+    );
+
+    final input = TripInput(
+      startDate: _controller.startDate!,
+      endDate: _controller.endDate!,
+      daysCount: _controller.daysCount,
+      mode: _controller.mode,
+      transport: _controller.transport,
+      fitness: _controller.fitness,
+      party: _controller.party,
+      regionText: _controller.regionText,
+      startPoint: _controller.startPoint,
+      returnToStart: _controller.returnToStart,
+      includeFillers: _controller.includeFillers,
+      maxKmPerDay: _controller.maxKmPerDay.round(),
+      mustSee: List<Poi>.from(_controller.mustSee),
+    );
+
+    final days = _engine.suggestDaysCountConsideringWeather(
+      input: input,
+      weatherByDay: weather,
+    );
+
 
     if (!mounted) return;
     showDialog(
@@ -526,9 +553,24 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('OK'),
+            child: const Text('Atcelt'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final start = _controller.startDate!;
+              final newEnd = start.add(Duration(days: days - 1));
+              _controller.setDateRange(start, newEnd);
+              // <<< ŠIS IR SVARĪGĀKAIS
+              Navigator.pop(context);
+
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Dienu skaits uzstādīts: $days')),
+              );
+            },
+            child: const Text('Lietot šo ilgumu'),
           ),
         ],
+
       ),
     );
   }
@@ -754,6 +796,29 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
                   ),
                   onChanged: (v) => _controller.setMaxKmPerDay(v),
                 ),
+                const SizedBox(height: 8),
+
+                SwitchListTile(
+                  title: const Text('Pēdējā dienā atgriezties sākumpunktā'),
+                  subtitle: const Text('Attiecas uz Moving tour režīmu'),
+                  value: _controller.returnToStart,
+                  onChanged: (v) => _controller.setReturnToStart(v),
+                ),
+
+                SwitchListTile(
+                  title: const Text('Aizpildīt dienas ar papildus POI'),
+                  subtitle: const Text('Pievieno tuvus objektus, ja paliek brīvs laiks'),
+                  value: _controller.includeFillers,
+                  onChanged: (v) => _controller.setIncludeFillers(v),
+                ),
+
+                SwitchListTile(
+                  title: const Text('Ignorēt laikapstākļu ietekmi (test mode)'),
+                  subtitle: const Text('Must-see sadale tikai pēc km/attāluma'),
+                  value: _controller.ignoreWeatherImpact,
+                  onChanged: (v) => _controller.setIgnoreWeather(v),
+                ),
+
 
                 _buildStartPointSection(),
 
@@ -871,10 +936,15 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
         party: _controller.party,
         regionText: _controller.regionText,
         startPoint: _controller.startPoint,
+
         returnToStart: _controller.returnToStart,
+      // pagaidām uzliec true testam
+        includeFillers: _controller.includeFillers,
+
         maxKmPerDay: _controller.maxKmPerDay.round(),
         mustSee: List<Poi>.from(_controller.mustSee),
       );
+
 
       final weather = await _weatherApi.getForecastForTrip(
         lat: input.startPoint.lat,
@@ -896,12 +966,12 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
         MaterialPageRoute(
           builder: (_) => ResultsScreen(
             plans: plans,
-            input: input, // <-- ŠIS IR GALVENAIS LABOJUMS
+            input: input,
             maxKmPerDay: input.maxKmPerDay,
           ),
+
         ),
       );
-
     } finally {
       if (mounted) setState(() => _loading = false);
     }

@@ -104,12 +104,22 @@ class TripController extends ChangeNotifier {
     if (notify) notifyListeners();
   }
 
-  // ===================== KM / RETURN =====================
-  double _maxKmPerDay = 180;
+
+  // ===================== KM / RETURN / FILLERS =====================
+  double _maxKmPerDay = 0;
+
+  /// Moving tour: pēdējā dienā pievieno atgriešanos startā
   bool _returnToStart = false;
+
+  /// Ja true – engine drīkst pievienot papildus POI
+  bool _includeFillers = true;
 
   double get maxKmPerDay => _maxKmPerDay;
   bool get returnToStart => _returnToStart;
+  bool get includeFillers => _includeFillers;
+
+
+  bool ignoreWeatherImpact = false; // ⭐ ŠEIT PIEVIENO
 
   void setMaxKmPerDay(double v) {
     if (_maxKmPerDay == v) return;
@@ -123,10 +133,21 @@ class TripController extends ChangeNotifier {
     notifyListeners();
   }
 
+  void setIncludeFillers(bool v) {
+    if (_includeFillers == v) return;
+    _includeFillers = v;
+    notifyListeners();
+  }
+
   void resetTripParams({bool notify = true}) {
-    _maxKmPerDay = 180;
+    _maxKmPerDay = 0;
     _returnToStart = false;
+    _includeFillers = true;
     if (notify) notifyListeners();
+  }
+  void setIgnoreWeather(bool v) {
+    ignoreWeatherImpact = v;
+    notifyListeners();
   }
 
   // ===================== START POINT =====================
@@ -198,6 +219,8 @@ class TripController extends ChangeNotifier {
       regionText: regionText,
       startPoint: startPoint,
       maxKmPerDay: maxKmPerDay,
+      returnToStart: returnToStart,
+      includeFillers: includeFillers,
       mustSee: List<Poi>.from(mustSee),
     );
   }
@@ -215,6 +238,8 @@ class TripController extends ChangeNotifier {
     _startPoint = p.startPoint;
 
     _maxKmPerDay = p.maxKmPerDay;
+    _returnToStart = p.returnToStart;
+    _includeFillers = p.includeFillers;
 
     _mustSee
       ..clear()

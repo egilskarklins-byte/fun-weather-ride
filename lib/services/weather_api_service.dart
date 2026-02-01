@@ -12,23 +12,62 @@ class WeatherApiService {
     required DateTime startDate,
     required int daysCount,
   }) async {
-    // If no key provided, return a deterministic mock forecast
+    // ================= MOCK MODE =================
     if (_apiKey.isEmpty) {
+      print('WEATHER API: USING MOCK DATA');
+
       return List.generate(daysCount, (i) {
-        final d = DateTime(startDate.year, startDate.month, startDate.day).add(Duration(days: i));
-        // alternating “good/bad” days
-        final bad = i % 3 == 1;
-        return WeatherDay(
-          date: d,
-          tempC: bad ? 3 : 18,
-          windMs: bad ? 13 : 5,
-          rainMm: bad ? 6 : 0,
-          description: bad ? 'Lietus / brāzmas (MOCK)' : 'Saulains (MOCK)',
-        );
+        final d = DateTime(startDate.year, startDate.month, startDate.day)
+            .add(Duration(days: i));
+
+        switch (i % 5) {
+          case 0:
+            return WeatherDay(
+              date: d,
+              tempC: 22,
+              windMs: 3,
+              rainMm: 0,
+              description: 'Saulains (MOCK)',
+            );
+          case 1:
+            return WeatherDay(
+              date: d,
+              tempC: 14,
+              windMs: 6,
+              rainMm: 5,
+              description: 'Lietus (MOCK)',
+            );
+          case 2:
+            return WeatherDay(
+              date: d,
+              tempC: 9,
+              windMs: 16,
+              rainMm: 12,
+              description: 'Vētra (MOCK)',
+            );
+          case 3:
+            return WeatherDay(
+              date: d,
+              tempC: -2,
+              windMs: 11,
+              rainMm: 1,
+              description: 'Auksts + vējš (MOCK)',
+            );
+          default:
+            return WeatherDay(
+              date: d,
+              tempC: 20,
+              windMs: 4,
+              rainMm: 0,
+              description: 'Ideāls laiks (MOCK)',
+            );
+        }
       });
     }
 
-    // OpenWeather 5-day/3h forecast (MVP)
+    // ================= REAL API =================
+    print('WEATHER API: USING REAL OPENWEATHER API');
+
     final uri = Uri.https('api.openweathermap.org', '/data/2.5/forecast', {
       'lat': '$lat',
       'lon': '$lon',
@@ -49,7 +88,10 @@ class WeatherApiService {
 
     final byDay = <DateTime, _Agg>{};
     for (final item in list) {
-      final dt = DateTime.fromMillisecondsSinceEpoch((item['dt'] as int) * 1000, isUtc: true).toLocal();
+      final dt = DateTime.fromMillisecondsSinceEpoch(
+        (item['dt'] as int) * 1000,
+        isUtc: true,
+      ).toLocal();
       final key = dayKey(dt);
 
       final main = item['main'] as Map<String, dynamic>;
@@ -59,7 +101,9 @@ class WeatherApiService {
       final rain = ((item['rain']?['3h'] ?? 0) as num).toDouble();
 
       final weatherArr = (item['weather'] as List).cast<Map<String, dynamic>>();
-      final desc = weatherArr.isNotEmpty ? (weatherArr.first['description'] as String) : '—';
+      final desc = weatherArr.isNotEmpty
+          ? (weatherArr.first['description'] as String)
+          : '—';
 
       byDay.putIfAbsent(key, () => _Agg());
       byDay[key]!.add(temp: temp, wind: wind, rain: rain, desc: desc);
@@ -70,11 +114,24 @@ class WeatherApiService {
       final d = dayKey(startDate.add(Duration(days: i)));
       final agg = byDay[d];
       if (agg == null) {
-        out.add(WeatherDay(date: d, tempC: 8, windMs: 5, rainMm: 0, description: 'Nav datu'));
+        out.add(WeatherDay(
+          date: d,
+          tempC: 8,
+          windMs: 5,
+          rainMm: 0,
+          description: 'Nav datu',
+        ));
       } else {
-        out.add(WeatherDay(date: d, tempC: agg.avgTemp, windMs: agg.maxWind, rainMm: agg.sumRain, description: agg.topDesc));
+        out.add(WeatherDay(
+          date: d,
+          tempC: agg.avgTemp,
+          windMs: agg.maxWind,
+          rainMm: agg.sumRain,
+          description: agg.topDesc,
+        ));
       }
     }
+
     return out;
   }
 }
@@ -86,7 +143,12 @@ class _Agg {
   double sumRain = 0;
   final Map<String, int> _descFreq = {};
 
-  void add({required double temp, required double wind, required double rain, required String desc}) {
+  void add({
+    required double temp,
+    required double wind,
+    required double rain,
+    required String desc,
+  }) {
     _tempSum += temp;
     _n++;
     if (wind > maxWind) maxWind = wind;

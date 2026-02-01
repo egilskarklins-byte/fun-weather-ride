@@ -7,6 +7,7 @@ import '../planner/planner_engine.dart';
 import '../services/weather_api_service.dart';
 import '../services/poi_catalog_service.dart';
 import '../models/trip.dart';
+import '../models/weather.dart';
 
 class ResultsScreen extends StatefulWidget {
   final List<DayPlan> plans;
@@ -74,6 +75,16 @@ class _ResultsScreenState extends State<ResultsScreen> {
                     'Diena ${i + 1} • ${_d(p.date)}',
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
+
+                  // ===== WEATHER ROW =====
+                  if (p.weather != null) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      _formatWeather(p.weather!),
+                      style: const TextStyle(fontSize: 13, color: Colors.black54),
+                    ),
+                  ],
+
                   const SizedBox(height: 6),
 
                   Text(p.summary),
@@ -84,7 +95,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
                     Container(
                       padding: const EdgeInsets.all(10),
                       decoration: BoxDecoration(
-                        color: Colors.red.withOpacity(0.08),
+                        color: Colors.red.withValues(alpha: 0.08),
                         borderRadius: BorderRadius.circular(10),
                         border: Border.all(color: Colors.red.shade300),
                       ),
@@ -152,6 +163,15 @@ class _ResultsScreenState extends State<ResultsScreen> {
     );
   }
 
+  // ================= WEATHER FORMAT =================
+
+  String _formatWeather(WeatherDay w) {
+    final t = '${w.tempC.round()}°C';
+    final rain = w.rainMm > 0 ? ' · 🌧 ${w.rainMm.toStringAsFixed(1)} mm' : '';
+    final wind = ' · 💨 ${w.windMs.toStringAsFixed(1)} m/s';
+    return '$t$rain$wind · ${w.description}';
+  }
+
   // ================= REPLAN =================
 
   Future<void> _replanFromToday() async {
@@ -169,7 +189,6 @@ class _ResultsScreenState extends State<ResultsScreen> {
 
       final poiPool = _poiCatalog.catalogForRegion(widget.input.regionText);
 
-      // Drošs fallback, ja replanFromDay vēl nav implementēts
       List<DayPlan> newPlans;
       try {
         newPlans = _engine.replanFromDay(
@@ -182,7 +201,6 @@ class _ResultsScreenState extends State<ResultsScreen> {
           skippedPoiIds: _skipped,
         );
       } catch (_) {
-        // Ja nav vēl replanFromDay, vienkārši nepārrēķinam
         newPlans = _plans;
       }
 
