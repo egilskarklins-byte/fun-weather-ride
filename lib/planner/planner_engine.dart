@@ -257,7 +257,6 @@ class PlannerEngine {
     return maxDays;
   }
 
-
   bool _canFitAllMustSeeWithWeather({
     required TripInput input,
     required List<WeatherDay> weatherByDay,
@@ -300,10 +299,10 @@ class PlannerEngine {
 
       final maxStops = _maxStopsForProfile(input);
 
-      if (weather != null) {
-        // SLIKTS LAIKS = reāli samazinam dienas kapacitāti
+      if (weather != null && !input.ignoreWeather) {
+        // slikts laiks = mazāka dienas kapacitāte
         if (weather.isRainy || weather.isStormy) {
-          maxHours *= 0.60; // bija 0.75
+          maxHours *= 0.60;
           maxKm *= 0.70;
         }
 
@@ -318,7 +317,6 @@ class PlannerEngine {
         }
       }
 
-
       maxHours = math.max(3.0, maxHours);
       maxKm = math.max(30.0, maxKm);
 
@@ -327,12 +325,17 @@ class PlannerEngine {
       final merged = <Poi>[...carryOver, ...raw];
       carryOver.clear();
 
-      final prioritized = _prioritizeMustSeeByWeather(
+      final prioritized = input.ignoreWeather
+          ? merged
+          : _prioritizeMustSeeByWeather(
         todaysMust: merged,
         weather: weather,
       );
 
-      int cap = _mustSeeCapByWeather(prioritized.length, weather);
+      int cap = input.ignoreWeather
+          ? prioritized.length
+          : _mustSeeCapByWeather(prioritized.length, weather);
+
       cap = math.min(cap, maxStops);
 
       var todaysMust = prioritized.take(cap).toList();
@@ -345,8 +348,26 @@ class PlannerEngine {
           if (input.mode == TripMode.singleBase)
             Poi(id: 'base_end_$i', name: 'Atpakaļ', location: currentBase),
         ];
-        final estKm = _estimateKm(stops);
+        final estKm = _estimateSingleDayKm(
+          base: currentBase,
+          stops: todaysMust,
+          movingTour: input.mode == TripMode.movingTour,
+        );
+
         final estHours = _estimateHours(stops);
+
+        // ================= DIAGNOSTIC =================
+        print('------------------------------');
+        print('DAY $i');
+        print('ignoreWeather=${input.ignoreWeather}');
+        print('maxKm=$maxKm');
+        print('usedKm=$estKm');
+        print('maxHours=$maxHours');
+        print('usedHours=$estHours');
+        print('mustSeeCount=${todaysMust.length}');
+        print('------------------------------');
+        // =============================================
+
         return estKm <= maxKm.round() && estHours <= maxHours;
       }
 
@@ -361,14 +382,14 @@ class PlannerEngine {
         return false;
       }
 
-
       carryOver.addAll(leftovers);
 
       if (todaysMust.length > maxStops) return false;
 
       if (input.mode == TripMode.movingTour) {
         if (!(input.returnToStart && isLast)) {
-          currentBase = todaysMust.isNotEmpty ? todaysMust.last.location : currentBase;
+          currentBase =
+          todaysMust.isNotEmpty ? todaysMust.last.location : currentBase;
         }
       }
     }
@@ -377,7 +398,6 @@ class PlannerEngine {
   }
 
   // ===================== BUILD PLAN =====================
-
   List<DayPlan> buildPlan({
     required TripInput input,
     required List<WeatherDay> weatherByDay,
@@ -385,210 +405,171 @@ class PlannerEngine {
   }) {
     final days = _datesBetween(input.startDate, input.daysCount);
 
-    final weatherMap = <DateTime, WeatherDay>{
+    final weatherMap = {
       for (final w in weatherByDay) _dayKey(w.date): w,
     };
 
     final mustSee = List<Poi>.from(input.mustSee);
 
+    // ==============================
+    // STEP 1: GEO CLUSTER
+    // ==============================
+
     final clusters = _clusterMustSeeByGeo(
       mustSee,
-      k: math.min(input.daysCount, mustSee.length),
+      k: input.daysCount,
       origin: input.startPoint,
     );
 
-    final orderedClusters = _orderClustersForwardIfMovingTour(
-      clusters: clusters,
-      origin: input.startPoint,
-      movingTour: input.mode == TripMode.movingTour,
-      allMustSee: mustSee,
+    final dayBuckets = List.generate(
+      input.daysCount,
+          (i) => <Poi>[...clusters[i]],
     );
 
-    final usedPoiIds = <String>{...mustSee.map((e) => e.id)};
+    // ==============================
+    // STEP 2: BALANCE BETWEEN DAYS
+    // ==============================
+
+    double effectiveMaxKm(int dayIndex) {
+      if (input.ignoreWeather) return input.maxKmPerDay.toDouble();
+
+      final w = weatherMap[_dayKey(days[dayIndex])];
+
+      double km = input.maxKmPerDay.toDouble();
+
+      if (w != null) {
+        if (w.isRainy || w.isStormy) km *= 0.8;
+        if (w.windMs >= 12) km *= 0.85;
+        if (w.isCold) km *= 0.9;
+      }
+
+      return km;
+    }
+
+    bool changed = true;
+
+    while (changed) {
+      changed = false;
+
+      for (int from = 0; from < dayBuckets.length; from++) {
+        final fromList = dayBuckets[from];
+
+        if (fromList.isEmpty) continue;
+
+        final fromKm = _estimateSingleDayKm(
+          base: input.startPoint,
+          stops: fromList,
+          movingTour: input.mode == TripMode.movingTour,
+        );
+
+        if (fromKm <= effectiveMaxKm(from)) continue;
+
+        for (int to = 0; to < dayBuckets.length; to++) {
+          if (to == from) continue;
+
+          final toList = dayBuckets[to];
+
+          for (int i = fromList.length - 1; i >= 0; i--) {
+            final candidate = fromList[i];
+
+            final newTo = [...toList, candidate];
+
+            final newKm = _estimateSingleDayKm(
+              base: input.startPoint,
+              stops: newTo,
+              movingTour: input.mode == TripMode.movingTour,
+            );
+
+            if (newKm <= effectiveMaxKm(to)) {
+              fromList.removeAt(i);
+              dayBuckets[to].add(candidate);
+              changed = true;
+              break;
+            }
+          }
+
+          if (changed) break;
+        }
+
+        if (changed) break;
+      }
+    }
+
+    // ==============================
+    // STEP 3: BUILD FINAL PLANS
+    // ==============================
+
     final plans = <DayPlan>[];
 
     LatLon currentBase = input.startPoint;
 
-    // carryOver = must-see kas neietilpa šodien un jāpārceļ uz nākamo dienu
-    final carryOver = <Poi>[];
-
     for (int i = 0; i < days.length; i++) {
       final date = days[i];
+      final todaysMust = dayBuckets[i];
+
       final weather = weatherMap[_dayKey(date)];
 
-      // ====== PROFILE impact ======
-      double maxHours = input.maxHoursPerDay *
-          input.fitnessMultiplier() *
-          _partyHoursMultiplier(input.party);
+      final base = input.mode == TripMode.singleBase
+          ? input.startPoint
+          : currentBase;
 
-      double maxKm =
-          input.maxKmPerDay.toDouble() * _partyKmMultiplier(input.party);
+      final stops = <Poi>[
+        Poi(id: 'base_$i', name: 'Sākums', location: base),
+        ...todaysMust,
+      ];
 
-      final maxStops = _maxStopsForProfile(input);
-
-      // ====== WEATHER penalty (kapacitātes samazinājums) ======
-      if (weather != null) {
-        if (weather.isRainy || weather.isStormy) {
-          maxHours *= 0.75;
-          maxKm *= 0.80;
-        }
-        if (weather.isCold) {
-          maxHours *= 0.90;
-          maxKm *= 0.90;
-        }
-        if (weather.windMs >= 12) {
-          maxHours *= 0.90;
-          maxKm *= 0.90;
-        }
-      }
-
-      maxHours = math.max(3.0, maxHours);
-      maxKm = math.max(30.0, maxKm);
-
-      // ====== MUST-SEE: merge carryOver + today's cluster ======
-      final rawMust = (i < orderedClusters.length) ? orderedClusters[i] : <Poi>[];
-
-      final mergedMust = <Poi>[...carryOver, ...rawMust];
-      carryOver.clear();
-
-      // ✅ reorder by weather, NEVER remove
-      final prioritized = _prioritizeMustSeeByWeather(
-        todaysMust: mergedMust,
-        weather: weather,
-      );
-
-      int cap = _mustSeeCapByWeather(prioritized.length, weather);
-
-      // "normālais" cap pēc profila (bet mēs neizmetam – tikai pārliekam)
-      cap = math.min(cap, maxStops);
-
-      var todaysMust = prioritized.take(cap).toList();
-      var leftovers = prioritized.skip(cap).toList();
-
-      bool withinLimits(List<Poi> stops) {
-        final estKm = _estimateKm(stops);
-        final estHours = _estimateHours(stops);
-        return estKm <= maxKm.round() && estHours <= maxHours;
-      }
-
-      List<Poi> buildStopsForMust(List<Poi> must) {
-        final basePoi = Poi(id: 'base_$i', name: 'Sākums', location: currentBase);
-        final stops = <Poi>[basePoi, ...must];
-        if (input.mode == TripMode.singleBase) {
-          stops.add(Poi(id: 'base_end_$i', name: 'Atpakaļ', location: currentBase));
-        }
-        return stops;
-      }
-
-      bool forcedBecauseNoDays = false;
-
-      // km/stundas fit: ja pārsniedz, pārliekam must-see uz nākamo dienu (neizmetam)
-      while (todaysMust.isNotEmpty && !withinLimits(buildStopsForMust(todaysMust))) {
-        final moved = todaysMust.removeLast();
-        leftovers.insert(0, moved);
-      }
-
-      // ✅ Svarīgi: ja šodien sanāk 0 must-see, bet vēl ir leftovers,
-      // ieliekam vismaz 1 un BRĪDINĀM (citādi būs tukša diena).
-      if (todaysMust.isEmpty && leftovers.isNotEmpty) {
-        todaysMust.add(leftovers.removeAt(0));
-        forcedBecauseNoDays = true;
-      }
-
-      final isLastDay = (i == days.length - 1);
-
-      if (!isLastDay) {
-        carryOver.addAll(leftovers);
-      } else {
-        // pēdējā dienā NEKRAUJAM visu virsū – ja neietilpst, vienkārši brīdinām
-        if (leftovers.isNotEmpty) {
-          forcedBecauseNoDays = true;
-          // bet NEPIEVIENOJAM leftovers pie todaysMust
-        }
-
-      }
-
-      final theme = _chooseTheme(weather: weather, todaysMust: todaysMust);
-
-      final center = centroid([
-        currentBase,
-        ...todaysMust.map((e) => e.location),
-      ]);
-
-      final stops = buildStopsForMust(todaysMust);
-
-      // filler tikai, ja vairs nav must-see “rindā”
-      final hasRemainingMustSeeLater =
-          orderedClusters.skip(i + 1).any((c) => c.isNotEmpty) || carryOver.isNotEmpty;
-
-      final allowFillers = input.includeFillers && !hasRemainingMustSeeLater;
-
-      final filled = allowFillers
-          ? _fillStopsToHours(
-        stops: stops,
-        maxHours: maxHours,
-        maxKm: maxKm,
-        maxStops: maxStops,
-        center: center,
-        poiPool: poiPool,
-        usedPoiIds: usedPoiIds,
-        movingTour: input.mode == TripMode.movingTour,
-        weather: weather,
-      )
-          : stops;
-
-      // Moving tour: pēdējā dienā (ja checkbox ieslēgts) pievienojam atgriešanos uz startu
-      if (input.mode == TripMode.movingTour && input.returnToStart && isLastDay) {
-        filled.add(
-          Poi(
-            id: 'return_home_$i',
-            name: 'Atpakaļ uz sākumu',
-            location: input.startPoint,
-          ),
+      if (input.mode == TripMode.singleBase) {
+        stops.add(
+          Poi(id: 'base_end_$i', name: 'Atpakaļ', location: base),
         );
       }
 
-      final estKm = _estimateKm(filled);
-      final estHours = _estimateHours(filled);
+      final estKm = _estimateKm(stops);
+      final estHours = _estimateHours(stops);
 
-      final exceeds = (estKm > maxKm.round()) || (estHours > maxHours);
+      final hasRemainingMustSeeLater =
+      dayBuckets.skip(i + 1).any((e) => e.isNotEmpty);
 
-      // ✅ Brīdinājums, ja:
-      // - sliktā laika dēļ samazinājās kapacitāte
-      // - vai mēs bijām spiesti ielikt must-see, lai nebūtu tukša diena
-      // - vai reāli pārsniedz km/stundas
-      final overloadWarning = exceeds || forcedBecauseNoDays;
+      final allowFillers =
+          input.includeFillers && !hasRemainingMustSeeLater;
 
-      final summaryBase =
-          'must-see: ${todaysMust.length} • ~${estHours.toStringAsFixed(1)} h • ~$estKm km';
+      final filledStops = allowFillers
+          ? _fillStopsToHours(
+        stops: stops,
+        maxHours: input.maxHoursPerDay,
+        maxKm: input.maxKmPerDay.toDouble(),
+        maxStops: 12,
+        center: centroid(stops.map((e) => e.location).toList()),
+        poiPool: poiPool,
+        usedPoiIds: {...mustSee.map((e) => e.id)},
+        movingTour: input.mode == TripMode.movingTour,
+        weather: input.ignoreWeather ? null : weather,
+      )
+          : stops;
 
       plans.add(
         DayPlan(
           date: date,
-          theme: theme,
-          base: currentBase,
+          theme: DayTheme.mixed,
+          base: base,
           mustSee: todaysMust,
-          stops: filled,
+          stops: filledStops,
           estKm: estKm,
           estHours: estHours,
-          weather: weather,
-          summary: overloadWarning
-              ? '⚠️ Slikts laiks / limiti — must-see ir ielikti, bet diena var būt par smagu. '
-              'Iesaku vairāk dienu vai mazāku km limitu. $summaryBase'
-              : summaryBase,
+          weather: input.ignoreWeather ? null : weather,
+          summary:
+          'must-see: ${todaysMust.length} • ~${estHours.toStringAsFixed(1)} h • ~$estKm km',
         ),
       );
 
-      // Moving tour bāze nākamajai dienai = pēdējā pietura (ignorējam return_home pēdējā dienā)
-      if (input.mode == TripMode.movingTour) {
-        if (!(input.returnToStart && isLastDay)) {
-          currentBase = filled.last.location;
-        }
+      if (input.mode == TripMode.movingTour && todaysMust.isNotEmpty) {
+        currentBase = todaysMust.last.location;
       }
     }
 
     return plans;
   }
+
 
   // ===================== FILL WITH POI =====================
 
@@ -680,6 +661,42 @@ class PlannerEngine {
     final visit = stops.fold<double>(0, (s, p) => s + p.durationH);
     return drive + visit;
   }
+  double _estimateSingleDayKm({
+    required LatLon base,
+    required List<Poi> stops,
+    required bool movingTour,
+  }) {
+    if (stops.isEmpty) return 0;
+
+    // single base: turp + atpakaļ katram
+    if (!movingTour) {
+      double km = 0;
+      for (final p in stops) {
+        km += 2 * _distKm(base, p.location);
+      }
+      return km;
+    }
+
+    // moving tour: secīgi no punkta uz punktu
+    double km = 0;
+    LatLon current = base;
+
+    for (final p in stops) {
+      km += _distKm(current, p.location);
+      current = p.location;
+    }
+
+    return km;
+  }
+  double _clusterScore(List<Poi> cluster, LatLon center) {
+    double score = 0;
+
+    for (final p in cluster) {
+      score += _distKm(p.location, center);
+    }
+
+    return score;
+  }
 
   // ===================== GEO CLUSTERING =====================
 
@@ -688,77 +705,147 @@ class PlannerEngine {
         required int k,
         required LatLon origin,
       }) {
-    if (k <= 0) return [];
-    if (mustSee.isEmpty) return List.generate(k, (_) => <Poi>[]);
+    if (mustSee.isEmpty) {
+      return List.generate(k, (_) => []);
+    }
 
     if (mustSee.length <= k) {
-      final out = List.generate(k, (_) => <Poi>[]);
+      final result = List.generate(k, (_) => <Poi>[]);
       for (int i = 0; i < mustSee.length; i++) {
-        out[i].add(mustSee[i]);
+        result[i].add(mustSee[i]);
       }
-      return out;
+      return result;
     }
 
-    final sortedByOrigin = List<Poi>.from(mustSee)
-      ..sort((a, b) =>
-          _distKm(origin, a.location).compareTo(_distKm(origin, b.location)));
+    // ============================
+    // STEP 1 — choose farthest seeds
+    // ============================
 
-    final seeds = <Poi>[sortedByOrigin.first];
+    final centers = <LatLon>[];
 
-    while (seeds.length < k) {
-      Poi best = mustSee.first;
-      double bestMinDist = -1;
+    // first center = farthest from origin
+    mustSee.sort((a, b) =>
+        _distKm(origin, b.location).compareTo(_distKm(origin, a.location)));
+
+    centers.add(mustSee.first.location);
+
+    while (centers.length < k) {
+      Poi? farthest;
+      double maxDist = -1;
 
       for (final p in mustSee) {
-        double minD = double.infinity;
-        for (final s in seeds) {
-          minD = math.min(minD, _distKm(p.location, s.location));
+        double nearestCenterDist = double.infinity;
+
+        for (final c in centers) {
+          final d = _distKm(p.location, c);
+          if (d < nearestCenterDist) nearestCenterDist = d;
         }
-        if (minD > bestMinDist) {
-          bestMinDist = minD;
-          best = p;
+
+        if (nearestCenterDist > maxDist) {
+          maxDist = nearestCenterDist;
+          farthest = p;
         }
       }
 
-      if (seeds.contains(best)) break;
-      seeds.add(best);
+      centers.add(farthest!.location);
     }
 
-    final clusters = List.generate(k, (_) => <Poi>[]);
+    // ============================
+    // STEP 2 — iterate assignment
+    // ============================
 
-    for (int i = 0; i < seeds.length; i++) {
-      clusters[i].add(seeds[i]);
+    List<List<Poi>> clusters = List.generate(k, (_) => []);
+
+    for (int iter = 0; iter < 8; iter++) {
+      clusters = List.generate(k, (_) => []);
+
+      // assign points to nearest center
+      for (final p in mustSee) {
+        int bestIndex = 0;
+        double bestDist = double.infinity;
+
+        for (int i = 0; i < centers.length; i++) {
+          final d = _distKm(p.location, centers[i]);
+          if (d < bestDist) {
+            bestDist = d;
+            bestIndex = i;
+          }
+        }
+
+        clusters[bestIndex].add(p);
+      }
+
+      // recompute centers
+      for (int i = 0; i < clusters.length; i++) {
+        if (clusters[i].isEmpty) continue;
+
+        centers[i] = centroid(
+          clusters[i].map((e) => e.location).toList(),
+        );
+      }
     }
 
-    final remaining = mustSee.where((p) => !seeds.contains(p)).toList();
+    // ============================
+    // STEP 3 — balance by distance
+    // ============================
 
-    for (final p in remaining) {
-      int bestIdx = 0;
-      double best = double.infinity;
+    bool changed = true;
+
+    while (changed) {
+      changed = false;
+
+      int largestIndex = 0;
+      int smallestIndex = 0;
+
+      double largestScore = -1;
+      double smallestScore = double.infinity;
 
       for (int i = 0; i < clusters.length; i++) {
-        final c = centroid(clusters[i].map((e) => e.location).toList());
-        final d = _distKm(c, p.location);
-        if (d < best) {
-          best = d;
-          bestIdx = i;
+        final score = _clusterScore(clusters[i], centers[i]);
+
+        if (score > largestScore) {
+          largestScore = score;
+          largestIndex = i;
+        }
+
+        if (score < smallestScore) {
+          smallestScore = score;
+          smallestIndex = i;
         }
       }
 
-      clusters[bestIdx].add(p);
-    }
-// ===================== BALANCE MUST-SEE ACROSS DAYS =====================
-// lai must-see sadalās vienmērīgi, nevis 1 diena = 1 punkts, cita = 6
-    clusters.sort((a, b) => b.length.compareTo(a.length));
+      if (largestIndex == smallestIndex) break;
 
-    while (true) {
-      final maxCluster = clusters.first;
-      final minCluster = clusters.last;
+      final largest = clusters[largestIndex];
+      if (largest.length <= 1) break;
 
-      if (maxCluster.length - minCluster.length <= 1) break;
+      Poi? bestCandidate;
+      double bestImprovement = 0;
 
-      minCluster.add(maxCluster.removeLast());
-      clusters.sort((a, b) => b.length.compareTo(a.length));
+      for (final p in largest) {
+        final distToSmall = _distKm(p.location, centers[smallestIndex]);
+        final distToLarge = _distKm(p.location, centers[largestIndex]);
+
+        final improvement = distToLarge - distToSmall;
+
+        if (improvement > bestImprovement) {
+          bestImprovement = improvement;
+          bestCandidate = p;
+        }
+      }
+
+      if (bestCandidate != null) {
+        clusters[largestIndex].remove(bestCandidate);
+        clusters[smallestIndex].add(bestCandidate);
+
+        centers[largestIndex] =
+            centroid(clusters[largestIndex].map((e) => e.location).toList());
+
+        centers[smallestIndex] =
+            centroid(clusters[smallestIndex].map((e) => e.location).toList());
+
+        changed = true;
+      }
     }
 
     return clusters;
@@ -822,6 +909,7 @@ class PlannerEngine {
     }
     return best;
   }
+
   Map<String, double> _buildDistanceMatrix(List<Poi> pois) {
     final map = <String, double>{};
 
@@ -898,5 +986,4 @@ class PlannerEngine {
   }
 
   double _deg2rad(double deg) => deg * math.pi / 180.0;
-
 }

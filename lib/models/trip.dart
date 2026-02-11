@@ -27,6 +27,7 @@ class TripInput {
 
   /// ✅ filler POI pievieno tikai, ja lietotājs to grib
   final bool includeFillers;
+  final bool ignoreWeather;
 
   const TripInput({
     required this.startDate,
@@ -42,6 +43,8 @@ class TripInput {
     required this.mustSee,
     this.returnToStart = false,
     this.includeFillers = false,
+    this.ignoreWeather = false,
+
   });
 
   // Ietekme uz dienas slodzi (stundām)

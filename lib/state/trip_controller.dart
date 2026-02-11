@@ -113,13 +113,15 @@ class TripController extends ChangeNotifier {
 
   /// Ja true – engine drīkst pievienot papildus POI
   bool _includeFillers = true;
+  bool _ignoreWeather = false;
 
   double get maxKmPerDay => _maxKmPerDay;
   bool get returnToStart => _returnToStart;
   bool get includeFillers => _includeFillers;
 
 
-  bool ignoreWeatherImpact = false; // ⭐ ŠEIT PIEVIENO
+  bool get ignoreWeather => _ignoreWeather;
+
 
   void setMaxKmPerDay(double v) {
     if (_maxKmPerDay == v) return;
@@ -146,9 +148,10 @@ class TripController extends ChangeNotifier {
     if (notify) notifyListeners();
   }
   void setIgnoreWeather(bool v) {
-    ignoreWeatherImpact = v;
+    _ignoreWeather = v;
     notifyListeners();
-  }
+
+}
 
   // ===================== START POINT =====================
   LatLon _startPoint = const LatLon(56.7934, 23.9358);

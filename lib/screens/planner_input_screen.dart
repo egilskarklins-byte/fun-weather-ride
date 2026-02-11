@@ -533,6 +533,7 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
       includeFillers: _controller.includeFillers,
       maxKmPerDay: _controller.maxKmPerDay.round(),
       mustSee: List<Poi>.from(_controller.mustSee),
+      ignoreWeather: _controller.ignoreWeather,
     );
 
     final days = _engine.suggestDaysCountConsideringWeather(
@@ -815,8 +816,9 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
                 SwitchListTile(
                   title: const Text('Ignorēt laikapstākļu ietekmi (test mode)'),
                   subtitle: const Text('Must-see sadale tikai pēc km/attāluma'),
-                  value: _controller.ignoreWeatherImpact,
-                  onChanged: (v) => _controller.setIgnoreWeather(v),
+                  value: _controller.ignoreWeather,
+                  onChanged: _controller.setIgnoreWeather,
+
                 ),
 
 
@@ -926,8 +928,11 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
     setState(() => _loading = true);
 
     try {
+      print(">>> GENERATE STARTED");
+
       final input = TripInput(
-        startDate: start,
+
+      startDate: start,
         endDate: end,
         daysCount: _controller.daysCount,
         mode: _controller.mode,
@@ -943,8 +948,11 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
 
         maxKmPerDay: _controller.maxKmPerDay.round(),
         mustSee: List<Poi>.from(_controller.mustSee),
+        ignoreWeather: _controller.ignoreWeather,
       );
 
+
+      print(">>> BEFORE WEATHER");
 
       final weather = await _weatherApi.getForecastForTrip(
         lat: input.startPoint.lat,
@@ -953,13 +961,21 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
         daysCount: input.daysCount,
       );
 
+      print(">>> AFTER WEATHER");
+
+
       final poiPool = _poiCatalog.catalogForRegion(_controller.regionText);
+
+      print(">>> BEFORE BUILD PLAN");
 
       final plans = _engine.buildPlan(
         input: input,
         weatherByDay: weather,
         poiPool: poiPool,
       );
+
+      print(">>> AFTER BUILD PLAN");
+
 
       if (!mounted) return;
       await Navigator.of(context).push(
