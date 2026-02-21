@@ -688,15 +688,6 @@ class PlannerEngine {
 
     return km;
   }
-  double _clusterScore(List<Poi> cluster, LatLon center) {
-    double score = 0;
-
-    for (final p in cluster) {
-      score += _distKm(p.location, center);
-    }
-
-    return score;
-  }
 
   // ===================== GEO CLUSTERING =====================
 
@@ -709,147 +700,52 @@ class PlannerEngine {
       return List.generate(k, (_) => []);
     }
 
-    if (mustSee.length <= k) {
-      final result = List.generate(k, (_) => <Poi>[]);
-      for (int i = 0; i < mustSee.length; i++) {
-        result[i].add(mustSee[i]);
-      }
-      return result;
+    // ============================
+    // STEP 1 — build route order (nearest neighbor)
+    // ============================
+
+    final remaining = List<Poi>.from(mustSee);
+    final ordered = <Poi>[];
+
+    LatLon current = origin;
+
+    while (remaining.isNotEmpty) {
+      remaining.sort(
+            (a, b) =>
+            _distKm(current, a.location)
+                .compareTo(_distKm(current, b.location)),
+      );
+
+      final next = remaining.removeAt(0);
+      ordered.add(next);
+      current = next.location;
     }
 
     // ============================
-    // STEP 1 — choose farthest seeds
+    // STEP 2 — split evenly into days
     // ============================
 
-    final centers = <LatLon>[];
+    final clusters = List.generate(k, (_) => <Poi>[]);
 
-    // first center = farthest from origin
-    mustSee.sort((a, b) =>
-        _distKm(origin, b.location).compareTo(_distKm(origin, a.location)));
+    final baseSize = ordered.length ~/ k;
+    final extra = ordered.length % k;
 
-    centers.add(mustSee.first.location);
+    int index = 0;
 
-    while (centers.length < k) {
-      Poi? farthest;
-      double maxDist = -1;
+    for (int day = 0; day < k; day++) {
+      final size = baseSize + (day < extra ? 1 : 0);
 
-      for (final p in mustSee) {
-        double nearestCenterDist = double.infinity;
-
-        for (final c in centers) {
-          final d = _distKm(p.location, c);
-          if (d < nearestCenterDist) nearestCenterDist = d;
+      for (int i = 0; i < size; i++) {
+        if (index < ordered.length) {
+          clusters[day].add(ordered[index]);
+          index++;
         }
-
-        if (nearestCenterDist > maxDist) {
-          maxDist = nearestCenterDist;
-          farthest = p;
-        }
-      }
-
-      centers.add(farthest!.location);
-    }
-
-    // ============================
-    // STEP 2 — iterate assignment
-    // ============================
-
-    List<List<Poi>> clusters = List.generate(k, (_) => []);
-
-    for (int iter = 0; iter < 8; iter++) {
-      clusters = List.generate(k, (_) => []);
-
-      // assign points to nearest center
-      for (final p in mustSee) {
-        int bestIndex = 0;
-        double bestDist = double.infinity;
-
-        for (int i = 0; i < centers.length; i++) {
-          final d = _distKm(p.location, centers[i]);
-          if (d < bestDist) {
-            bestDist = d;
-            bestIndex = i;
-          }
-        }
-
-        clusters[bestIndex].add(p);
-      }
-
-      // recompute centers
-      for (int i = 0; i < clusters.length; i++) {
-        if (clusters[i].isEmpty) continue;
-
-        centers[i] = centroid(
-          clusters[i].map((e) => e.location).toList(),
-        );
-      }
-    }
-
-    // ============================
-    // STEP 3 — balance by distance
-    // ============================
-
-    bool changed = true;
-
-    while (changed) {
-      changed = false;
-
-      int largestIndex = 0;
-      int smallestIndex = 0;
-
-      double largestScore = -1;
-      double smallestScore = double.infinity;
-
-      for (int i = 0; i < clusters.length; i++) {
-        final score = _clusterScore(clusters[i], centers[i]);
-
-        if (score > largestScore) {
-          largestScore = score;
-          largestIndex = i;
-        }
-
-        if (score < smallestScore) {
-          smallestScore = score;
-          smallestIndex = i;
-        }
-      }
-
-      if (largestIndex == smallestIndex) break;
-
-      final largest = clusters[largestIndex];
-      if (largest.length <= 1) break;
-
-      Poi? bestCandidate;
-      double bestImprovement = 0;
-
-      for (final p in largest) {
-        final distToSmall = _distKm(p.location, centers[smallestIndex]);
-        final distToLarge = _distKm(p.location, centers[largestIndex]);
-
-        final improvement = distToLarge - distToSmall;
-
-        if (improvement > bestImprovement) {
-          bestImprovement = improvement;
-          bestCandidate = p;
-        }
-      }
-
-      if (bestCandidate != null) {
-        clusters[largestIndex].remove(bestCandidate);
-        clusters[smallestIndex].add(bestCandidate);
-
-        centers[largestIndex] =
-            centroid(clusters[largestIndex].map((e) => e.location).toList());
-
-        centers[smallestIndex] =
-            centroid(clusters[smallestIndex].map((e) => e.location).toList());
-
-        changed = true;
       }
     }
 
     return clusters;
   }
+
 
 
   List<List<Poi>> _orderClustersForwardIfMovingTour({
