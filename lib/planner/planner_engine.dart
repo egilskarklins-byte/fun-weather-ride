@@ -42,6 +42,8 @@ class PlannerEngine {
         weather.windMs >= 12;
   }
 
+  bool _isBadWeather(WeatherDay? weather) => _preferIndoorByWeather(weather);
+
   int _indoorPriority(Poi p) {
     final isIndoorCat = p.categories.contains(PoiCategory.indoor) ||
         p.categories.contains(PoiCategory.museum);
@@ -50,7 +52,6 @@ class PlannerEngine {
 
   bool _isIndoorPoi(Poi p) => _indoorPriority(p) == 1;
 
-  /// Nekad nemet ārā must-see: tikai pārkārto secību (indoor/outdoor) atkarībā no laika.
   List<Poi> _prioritizeMustSeeByWeather({
     required List<Poi> todaysMust,
     required WeatherDay? weather,
@@ -60,7 +61,6 @@ class PlannerEngine {
     final out = List<Poi>.from(todaysMust);
     final preferIndoor = _preferIndoorByWeather(weather);
 
-    // Slikts laiks => indoor pirmais. Labs => outdoor pirmais.
     out.sort((a, b) {
       final ai = _indoorPriority(a);
       final bi = _indoorPriority(b);
@@ -70,8 +70,6 @@ class PlannerEngine {
     return out;
   }
 
-  /// Weather nedrīkst "samazināt must-see skaitu".
-  /// Weather ietekmē maxKm/maxHours un theme/priority, bet must-see izkārtojumu pa dienām atstājam ģeogrāfijai.
   int _mustSeeCapByWeather(int candidateCount, WeatherDay? weather) {
     return candidateCount;
   }
@@ -79,9 +77,11 @@ class PlannerEngine {
   DayTheme _chooseTheme({
     required WeatherDay? weather,
     required List<Poi> todaysMust,
+    required bool fallbackIndoorUsed,
   }) {
+    if (fallbackIndoorUsed) return DayTheme.indoor;
+
     if (todaysMust.isEmpty) {
-      // ja nav must-see, balstāmies tikai uz weather
       return _preferIndoorByWeather(weather) ? DayTheme.indoor : DayTheme.mixed;
     }
 
@@ -93,7 +93,7 @@ class PlannerEngine {
     return DayTheme.mixed;
   }
 
-  // ===================== REPLAN (DOES NOT REMOVE ANYTHING) =====================
+  // ===================== REPLAN =====================
 
   List<DayPlan> replanFromDay({
     required TripInput originalInput,
@@ -182,6 +182,7 @@ class PlannerEngine {
         if (id.startsWith('base_')) continue;
         if (id.startsWith('base_end_')) continue;
         if (id.startsWith('return_home_')) continue;
+        if (id.startsWith('base_tmp')) continue;
         out.add(id);
       }
     }
@@ -228,7 +229,54 @@ class PlannerEngine {
     return base.clamp(3, 12);
   }
 
-  // ===================== NEW: SUGGEST DAYS COUNT WITH WEATHER =====================
+  // ===================== DAY LIMIT HELPERS =====================
+
+  double _effectiveMaxKmForDay({
+    required TripInput input,
+    required WeatherDay? weather,
+  }) {
+    double maxKm =
+        input.maxKmPerDay.toDouble() * _partyKmMultiplier(input.party);
+
+    if (weather != null && !input.ignoreWeather) {
+      if (weather.isRainy || weather.isStormy) {
+        maxKm *= 0.80;
+      }
+      if (weather.windMs >= 12) {
+        maxKm *= 0.85;
+      }
+      if (weather.isCold) {
+        maxKm *= 0.90;
+      }
+    }
+
+    return math.max(30.0, maxKm);
+  }
+
+  double _effectiveMaxHoursForDay({
+    required TripInput input,
+    required WeatherDay? weather,
+  }) {
+    double maxHours = input.maxHoursPerDay *
+        input.fitnessMultiplier() *
+        _partyHoursMultiplier(input.party);
+
+    if (weather != null && !input.ignoreWeather) {
+      if (weather.isRainy || weather.isStormy) {
+        maxHours *= 0.60;
+      }
+      if (weather.windMs >= 12) {
+        maxHours *= 0.75;
+      }
+      if (weather.isCold) {
+        maxHours *= 0.80;
+      }
+    }
+
+    return math.max(3.0, maxHours);
+  }
+
+  // ===================== SUGGEST DAYS COUNT =====================
 
   int suggestDaysCountConsideringWeather({
     required TripInput input,
@@ -239,16 +287,29 @@ class PlannerEngine {
 
     final maxDays = math.min(30, mustSee.length);
 
-    // Pre-calc distance matrix
-    final distances = _buildDistanceMatrix(mustSee);
-
     for (int k = 1; k <= maxDays; k++) {
-      final ok = _canFitMustSeeIntoDays(
-        mustSee: mustSee,
-        distances: distances,
-        days: k,
-        input: input,
+      final endDate = _dayKey(input.startDate).add(Duration(days: k - 1));
+
+      final testInput = TripInput(
+        startDate: _dayKey(input.startDate),
+        endDate: endDate,
+        daysCount: k,
+        mode: input.mode,
+        transport: input.transport,
+        fitness: input.fitness,
+        party: input.party,
+        regionText: input.regionText,
+        startPoint: input.startPoint,
+        returnToStart: input.returnToStart,
+        includeFillers: input.includeFillers,
+        maxKmPerDay: input.maxKmPerDay,
+        mustSee: List<Poi>.from(input.mustSee),
+      );
+
+      final ok = _canFitAllMustSeeWithWeather(
+        input: testInput,
         weatherByDay: weatherByDay,
+        daysCount: k,
       );
 
       if (ok) return k;
@@ -272,7 +333,7 @@ class PlannerEngine {
 
     final clusters = _clusterMustSeeByGeo(
       mustSee,
-      k: math.min(input.daysCount, mustSee.length),
+      k: math.min(daysCount, math.max(1, mustSee.length)),
       origin: input.startPoint,
     );
 
@@ -290,35 +351,15 @@ class PlannerEngine {
       final date = days[i];
       final weather = weatherMap[_dayKey(date)];
 
-      double maxHours = input.maxHoursPerDay *
-          input.fitnessMultiplier() *
-          _partyHoursMultiplier(input.party);
-
-      double maxKm =
-          input.maxKmPerDay.toDouble() * _partyKmMultiplier(input.party);
-
+      final maxHours = _effectiveMaxHoursForDay(
+        input: input,
+        weather: weather,
+      );
+      final maxKm = _effectiveMaxKmForDay(
+        input: input,
+        weather: weather,
+      );
       final maxStops = _maxStopsForProfile(input);
-
-      if (weather != null && !input.ignoreWeather) {
-        // slikts laiks = mazāka dienas kapacitāte
-        if (weather.isRainy || weather.isStormy) {
-          maxHours *= 0.60;
-          maxKm *= 0.70;
-        }
-
-        if (weather.windMs >= 12) {
-          maxHours *= 0.75;
-          maxKm *= 0.80;
-        }
-
-        if (weather.isCold) {
-          maxHours *= 0.80;
-          maxKm *= 0.85;
-        }
-      }
-
-      maxHours = math.max(3.0, maxHours);
-      maxKm = math.max(30.0, maxKm);
 
       final raw = (i < orderedClusters.length) ? orderedClusters[i] : <Poi>[];
 
@@ -342,32 +383,20 @@ class PlannerEngine {
       var leftovers = prioritized.skip(cap).toList();
 
       bool within() {
-        final stops = <Poi>[
-          Poi(id: 'base_$i', name: 'Sākums', location: currentBase),
-          ...todaysMust,
-          if (input.mode == TripMode.singleBase)
-            Poi(id: 'base_end_$i', name: 'Atpakaļ', location: currentBase),
-        ];
         final estKm = _estimateSingleDayKm(
           base: currentBase,
           stops: todaysMust,
           movingTour: input.mode == TripMode.movingTour,
         );
 
+        final stops = <Poi>[
+          Poi(id: 'base_$i', name: 'Sākums', location: currentBase),
+          ...todaysMust,
+          if (input.mode == TripMode.singleBase)
+            Poi(id: 'base_end_$i', name: 'Atpakaļ', location: currentBase),
+        ];
+
         final estHours = _estimateHours(stops);
-
-        // ================= DIAGNOSTIC =================
-        print('------------------------------');
-        print('DAY $i');
-        print('ignoreWeather=${input.ignoreWeather}');
-        print('maxKm=$maxKm');
-        print('usedKm=$estKm');
-        print('maxHours=$maxHours');
-        print('usedHours=$estHours');
-        print('mustSeeCount=${todaysMust.length}');
-        print('------------------------------');
-        // =============================================
-
         return estKm <= maxKm.round() && estHours <= maxHours;
       }
 
@@ -378,7 +407,6 @@ class PlannerEngine {
 
       final isLast = (i == days.length - 1);
       if (isLast && leftovers.isNotEmpty) {
-        // nevar ietilpt šajā daysCount, vajag vairāk dienu
         return false;
       }
 
@@ -398,6 +426,7 @@ class PlannerEngine {
   }
 
   // ===================== BUILD PLAN =====================
+
   List<DayPlan> buildPlan({
     required TripInput input,
     required List<WeatherDay> weatherByDay,
@@ -411,14 +440,15 @@ class PlannerEngine {
 
     final mustSee = List<Poi>.from(input.mustSee);
 
-    // ==============================
-    // STEP 1: GEO CLUSTER
-    // ==============================
-
     final clusters = _clusterMustSeeByGeo(
       mustSee,
       k: input.daysCount,
       origin: input.startPoint,
+    );
+
+    final hadInitialMustSeeByDay = List<bool>.generate(
+      input.daysCount,
+          (i) => clusters[i].isNotEmpty,
     );
 
     final dayBuckets = List.generate(
@@ -426,24 +456,24 @@ class PlannerEngine {
           (i) => <Poi>[...clusters[i]],
     );
 
+    for (int i = 0; i < dayBuckets.length; i++) {
+      print('DAYBUCKET $i: ${dayBuckets[i].map((p) => p.name).toList()}');
+    }
+
     // ==============================
     // STEP 2: BALANCE BETWEEN DAYS
     // ==============================
 
     double effectiveMaxKm(int dayIndex) {
-      if (input.ignoreWeather) return input.maxKmPerDay.toDouble();
+      final weather = weatherMap[_dayKey(days[dayIndex])];
+      return input.ignoreWeather
+          ? input.maxKmPerDay.toDouble()
+          : _effectiveMaxKmForDay(input: input, weather: weather);
+    }
 
-      final w = weatherMap[_dayKey(days[dayIndex])];
-
-      double km = input.maxKmPerDay.toDouble();
-
-      if (w != null) {
-        if (w.isRainy || w.isStormy) km *= 0.8;
-        if (w.windMs >= 12) km *= 0.85;
-        if (w.isCold) km *= 0.9;
-      }
-
-      return km;
+    print('=== STEP2 BALANCE START ===');
+    for (int d = 0; d < dayBuckets.length; d++) {
+      print('PRE BAL day=$d: ${dayBuckets[d].map((p) => p.name).toList()}');
     }
 
     bool changed = true;
@@ -462,27 +492,76 @@ class PlannerEngine {
           movingTour: input.mode == TripMode.movingTour,
         );
 
+        print(
+          'BAL CHECK from=$from fromKm=$fromKm max=${effectiveMaxKm(from).toStringAsFixed(1)} '
+              'fromList=${fromList.map((p) => p.name).toList()}',
+        );
+
         if (fromKm <= effectiveMaxKm(from)) continue;
 
-        for (int to = 0; to < dayBuckets.length; to++) {
-          if (to == from) continue;
+        final toCandidates = <int>[
+          if (from - 1 >= 0) from - 1,
+          if (from + 1 < dayBuckets.length) from + 1,
+        ];
 
+        for (final to in toCandidates) {
           final toList = dayBuckets[to];
 
           for (int i = fromList.length - 1; i >= 0; i--) {
             final candidate = fromList[i];
 
-            final newTo = [...toList, candidate];
+            // DAY CANNOT BECOME EMPTY:
+            // ja šajā dienā sākotnēji bija must-see un šobrīd palicis tikai 1,
+            // tad to nedrīkst pārbīdīt prom.
+            if (fromList.length == 1 && hadInitialMustSeeByDay[from]) {
+              continue;
+            }
 
-            final newKm = _estimateSingleDayKm(
+            final testToEnd = List<Poi>.from(toList)..add(candidate);
+            final testToStart = <Poi>[candidate, ...toList];
+
+            final newKmEnd = _estimateSingleDayKm(
               base: input.startPoint,
-              stops: newTo,
+              stops: testToEnd,
               movingTour: input.mode == TripMode.movingTour,
             );
 
+            final newKmStart = _estimateSingleDayKm(
+              base: input.startPoint,
+              stops: testToStart,
+              movingTour: input.mode == TripMode.movingTour,
+            );
+
+            final useEnd = newKmEnd <= newKmStart;
+            final newKm = useEnd ? newKmEnd : newKmStart;
+
+            if (toList.isNotEmpty) {
+              final toCent = centroid(toList.map((e) => e.location).toList());
+              final distToDay = _distKm(toCent, candidate.location);
+              if (distToDay > 80) continue;
+            }
+
             if (newKm <= effectiveMaxKm(to)) {
+              print(
+                'BAL MOVE: "${candidate.name}" from day $from -> day $to  '
+                    'fromKm=$fromKm  newKm(to)=$newKm  maxTo=${effectiveMaxKm(to).toStringAsFixed(1)}',
+              );
+
               fromList.removeAt(i);
-              dayBuckets[to].add(candidate);
+
+              if (useEnd) {
+                dayBuckets[to].add(candidate);
+              } else {
+                dayBuckets[to].insert(0, candidate);
+              }
+
+              print(
+                'AFTER MOVE from=$from: ${fromList.map((p) => p.name).toList()}',
+              );
+              print(
+                'AFTER MOVE to=$to: ${dayBuckets[to].map((p) => p.name).toList()}',
+              );
+
               changed = true;
               break;
             }
@@ -495,81 +574,187 @@ class PlannerEngine {
       }
     }
 
+    print('=== STEP2 BALANCE END ===');
+    for (int d = 0; d < dayBuckets.length; d++) {
+      print('POST BAL day=$d: ${dayBuckets[d].map((p) => p.name).toList()}');
+    }
+
     // ==============================
     // STEP 3: BUILD FINAL PLANS
     // ==============================
 
     final plans = <DayPlan>[];
+    final usedPoiIds = <String>{...mustSee.map((e) => e.id)};
 
     LatLon currentBase = input.startPoint;
 
     for (int i = 0; i < days.length; i++) {
       final date = days[i];
-      final todaysMust = dayBuckets[i];
-
+      final todaysMust = List<Poi>.from(dayBuckets[i]);
       final weather = weatherMap[_dayKey(date)];
 
       final base = input.mode == TripMode.singleBase
           ? input.startPoint
           : currentBase;
 
-      final stops = <Poi>[
+      final maxKm = _effectiveMaxKmForDay(input: input, weather: weather);
+      final maxHours = _effectiveMaxHoursForDay(input: input, weather: weather);
+
+      final baseStops = <Poi>[
         Poi(id: 'base_$i', name: 'Sākums', location: base),
         ...todaysMust,
       ];
 
       if (input.mode == TripMode.singleBase) {
-        stops.add(
+        baseStops.add(
           Poi(id: 'base_end_$i', name: 'Atpakaļ', location: base),
         );
       }
 
-      final estKm = _estimateKm(stops);
-      final estHours = _estimateHours(stops);
-
       final hasRemainingMustSeeLater =
       dayBuckets.skip(i + 1).any((e) => e.isNotEmpty);
 
-      final allowFillers =
-          input.includeFillers && !hasRemainingMustSeeLater;
+      final badWeather = !input.ignoreWeather && _isBadWeather(weather);
 
-      final filledStops = allowFillers
-          ? _fillStopsToHours(
-        stops: stops,
-        maxHours: input.maxHoursPerDay,
-        maxKm: input.maxKmPerDay.toDouble(),
-        maxStops: 12,
-        center: centroid(stops.map((e) => e.location).toList()),
-        poiPool: poiPool,
-        usedPoiIds: {...mustSee.map((e) => e.id)},
-        movingTour: input.mode == TripMode.movingTour,
+      bool fallbackIndoorUsed = false;
+      List<Poi> finalStops = List<Poi>.from(baseStops);
+
+      if (badWeather && todaysMust.isEmpty && hadInitialMustSeeByDay[i]) {
+        final fallbackStops = _buildIndoorFallbackStops(
+          base: base,
+          maxKm: maxKm,
+          maxHours: maxHours,
+          maxStops: _maxStopsForProfile(input),
+          poiPool: poiPool,
+          usedPoiIds: usedPoiIds,
+          movingTour: input.mode == TripMode.movingTour,
+        );
+
+        final fallbackRealPois = fallbackStops.where((p) {
+          return !p.id.startsWith('base_') && !p.id.startsWith('base_tmp');
+        }).length;
+
+        if (fallbackRealPois > 0) {
+          finalStops = fallbackStops;
+          fallbackIndoorUsed = true;
+          print('WEATHER FALLBACK DAY $i: '
+              '${finalStops.map((p) => p.name).toList()}');
+        }
+      }
+
+      final allowFillers =
+          input.includeFillers && !hasRemainingMustSeeLater && !fallbackIndoorUsed;
+
+      if (allowFillers) {
+        finalStops = _fillStopsToHours(
+          stops: finalStops,
+          maxHours: maxHours,
+          maxKm: maxKm,
+          maxStops: 12,
+          center: centroid(finalStops.map((e) => e.location).toList()),
+          poiPool: poiPool,
+          usedPoiIds: usedPoiIds,
+          movingTour: input.mode == TripMode.movingTour,
+          weather: input.ignoreWeather ? null : weather,
+        );
+      }
+
+      final estKm = _estimateKm(finalStops);
+      final estHours = _estimateHours(finalStops);
+
+      print('FINAL DAY $i: km=$estKm stops=${finalStops.map((p) => p.name).toList()}');
+
+      final theme = _chooseTheme(
         weather: input.ignoreWeather ? null : weather,
-      )
-          : stops;
+        todaysMust: todaysMust,
+        fallbackIndoorUsed: fallbackIndoorUsed,
+      );
+
+      final summary = fallbackIndoorUsed
+          ? 'weather fallback indoor day • ~${estHours.toStringAsFixed(1)} h • ~$estKm km'
+          : 'must-see: ${todaysMust.length} • ~${estHours.toStringAsFixed(1)} h • ~$estKm km';
 
       plans.add(
         DayPlan(
           date: date,
-          theme: DayTheme.mixed,
+          theme: theme,
           base: base,
           mustSee: todaysMust,
-          stops: filledStops,
+          stops: finalStops,
           estKm: estKm,
           estHours: estHours,
           weather: input.ignoreWeather ? null : weather,
-          summary:
-          'must-see: ${todaysMust.length} • ~${estHours.toStringAsFixed(1)} h • ~$estKm km',
+          summary: summary,
         ),
       );
 
-      if (input.mode == TripMode.movingTour && todaysMust.isNotEmpty) {
-        currentBase = todaysMust.last.location;
+      if (input.mode == TripMode.movingTour) {
+        final realTravelStops = finalStops.where((p) {
+          return !p.id.startsWith('base_') &&
+              !p.id.startsWith('base_end_') &&
+              !p.id.startsWith('base_tmp');
+        }).toList();
+
+        if (realTravelStops.isNotEmpty) {
+          currentBase = realTravelStops.last.location;
+        }
       }
     }
 
     return plans;
   }
 
+  // ===================== WEATHER FALLBACK =====================
+
+  List<Poi> _buildIndoorFallbackStops({
+    required LatLon base,
+    required double maxKm,
+    required double maxHours,
+    required int maxStops,
+    required List<Poi> poiPool,
+    required Set<String> usedPoiIds,
+    required bool movingTour,
+  }) {
+    final indoorCandidates = poiPool.where((p) {
+      if (usedPoiIds.contains(p.id)) return false;
+      if (!_isIndoorPoi(p)) return false;
+      return _distKm(base, p.location) <= 60;
+    }).toList();
+
+    indoorCandidates.sort((a, b) {
+      final pa = _distKm(base, a.location);
+      final pb = _distKm(base, b.location);
+      return pa.compareTo(pb);
+    });
+
+    final out = <Poi>[
+      Poi(id: 'base_tmp_start', name: 'Sākums', location: base),
+    ];
+
+    if (!movingTour) {
+      out.add(Poi(id: 'base_tmp_end', name: 'Atpakaļ', location: base));
+    }
+
+    for (final p in indoorCandidates) {
+      final insertIndex = movingTour ? out.length : out.length - 1;
+      final test = List<Poi>.from(out)..insert(insertIndex, p);
+
+      final km = _estimateKm(test);
+      final hours = _estimateHours(test);
+
+      final realStopCount =
+          test.where((e) => !e.id.startsWith('base_tmp')).length;
+
+      if (km > maxKm.round()) continue;
+      if (hours > maxHours) continue;
+      if (realStopCount > maxStops) continue;
+
+      out.insert(insertIndex, p);
+      usedPoiIds.add(p.id);
+    }
+
+    return out;
+  }
 
   // ===================== FILL WITH POI =====================
 
@@ -595,10 +780,10 @@ class PlannerEngine {
 
     candidates.sort((a, b) {
       if (preferIndoor) {
-        final p = _indoorPriority(b) - _indoorPriority(a); // indoor first
+        final p = _indoorPriority(b) - _indoorPriority(a);
         if (p != 0) return p;
       } else {
-        final p = _indoorPriority(a) - _indoorPriority(b); // outdoor first
+        final p = _indoorPriority(a) - _indoorPriority(b);
         if (p != 0) return p;
       }
       return _distKm(center, a.location).compareTo(_distKm(center, b.location));
@@ -661,6 +846,7 @@ class PlannerEngine {
     final visit = stops.fold<double>(0, (s, p) => s + p.durationH);
     return drive + visit;
   }
+
   double _estimateSingleDayKm({
     required LatLon base,
     required List<Poi> stops,
@@ -668,25 +854,14 @@ class PlannerEngine {
   }) {
     if (stops.isEmpty) return 0;
 
-    // single base: turp + atpakaļ katram
-    if (!movingTour) {
-      double km = 0;
-      for (final p in stops) {
-        km += 2 * _distKm(base, p.location);
-      }
-      return km;
-    }
+    final route = <Poi>[
+      Poi(id: 'base_tmp', name: 'BASE_START', location: base),
+      ...stops,
+      if (!movingTour)
+        Poi(id: 'base_tmp_end', name: 'BASE_END', location: base),
+    ];
 
-    // moving tour: secīgi no punkta uz punktu
-    double km = 0;
-    LatLon current = base;
-
-    for (final p in stops) {
-      km += _distKm(current, p.location);
-      current = p.location;
-    }
-
-    return km;
+    return _estimateKm(route).toDouble();
   }
 
   // ===================== GEO CLUSTERING =====================
@@ -700,10 +875,6 @@ class PlannerEngine {
       return List.generate(k, (_) => []);
     }
 
-    // ============================
-    // STEP 1 — build route order (nearest neighbor)
-    // ============================
-
     final remaining = List<Poi>.from(mustSee);
     final ordered = <Poi>[];
 
@@ -712,18 +883,13 @@ class PlannerEngine {
     while (remaining.isNotEmpty) {
       remaining.sort(
             (a, b) =>
-            _distKm(current, a.location)
-                .compareTo(_distKm(current, b.location)),
+            _distKm(current, a.location).compareTo(_distKm(current, b.location)),
       );
 
       final next = remaining.removeAt(0);
       ordered.add(next);
       current = next.location;
     }
-
-    // ============================
-    // STEP 2 — split evenly into days
-    // ============================
 
     final clusters = List.generate(k, (_) => <Poi>[]);
 
@@ -745,8 +911,6 @@ class PlannerEngine {
 
     return clusters;
   }
-
-
 
   List<List<Poi>> _orderClustersForwardIfMovingTour({
     required List<List<Poi>> clusters,
@@ -819,33 +983,6 @@ class PlannerEngine {
       }
     }
     return map;
-  }
-
-  bool _canFitMustSeeIntoDays({
-    required List<Poi> mustSee,
-    required Map<String, double> distances,
-    required int days,
-    required TripInput input,
-    required List<WeatherDay> weatherByDay,
-  }) {
-    final maxKm = input.maxKmPerDay.toDouble();
-    final buckets = List.generate(days, (_) => <Poi>[]);
-
-    for (int i = 0; i < mustSee.length; i++) {
-      buckets[i % days].add(mustSee[i]);
-    }
-
-    for (final day in buckets) {
-      if (day.isEmpty) continue;
-
-      final km = input.mode == TripMode.singleBase
-          ? _estimateSingleBaseKm(input.startPoint, day)
-          : _estimateMovingTourKm(day);
-
-      if (km > maxKm * 1.15) return false;
-    }
-
-    return true;
   }
 
   double _estimateSingleBaseKm(LatLon base, List<Poi> pois) {
