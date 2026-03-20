@@ -276,6 +276,123 @@ class PlannerEngine {
     return math.max(3.0, maxHours);
   }
 
+  // ===================== STEP2 SCORE HELPERS =====================
+
+  double _dayGeoSpreadPenalty({
+    required LatLon base,
+    required List<Poi> stops,
+    required bool movingTour,
+  }) {
+    if (stops.length <= 1) return 0;
+
+    final pts = stops.map((p) => p.location).toList();
+    final c = centroid(pts);
+
+    double spread = 0;
+    for (final p in pts) {
+      spread += _distKm(c, p);
+    }
+    spread = spread / pts.length;
+
+    final baseOffset = movingTour ? 0.0 : _distKm(base, c) * 0.10;
+    return spread * 1.2 + baseOffset;
+  }
+
+  double _dayBalanceScore({
+    required LatLon base,
+    required List<Poi> stops,
+    required bool movingTour,
+    required double maxKm,
+    required bool hadInitialMustSee,
+  }) {
+    final km = _estimateSingleDayKm(
+      base: base,
+      stops: stops,
+      movingTour: movingTour,
+    );
+
+    final overflow = math.max(0.0, km - maxKm);
+    final overflowPenalty = overflow * 20.0;
+
+    final spreadPenalty = _dayGeoSpreadPenalty(
+      base: base,
+      stops: stops,
+      movingTour: movingTour,
+    );
+
+    final emptyPenalty = (hadInitialMustSee && stops.isEmpty) ? 5000.0 : 0.0;
+    final thinDayPenalty =
+    (hadInitialMustSee && stops.length == 1) ? 12.0 : 0.0;
+
+    return overflowPenalty + spreadPenalty + emptyPenalty + thinDayPenalty;
+  }
+
+  double _pairBalanceScore({
+    required LatLon base,
+    required List<Poi> fromStops,
+    required List<Poi> toStops,
+    required bool movingTour,
+    required double fromMaxKm,
+    required double toMaxKm,
+    required bool fromHadInitialMustSee,
+    required bool toHadInitialMustSee,
+  }) {
+    return _dayBalanceScore(
+      base: base,
+      stops: fromStops,
+      movingTour: movingTour,
+      maxKm: fromMaxKm,
+      hadInitialMustSee: fromHadInitialMustSee,
+    ) +
+        _dayBalanceScore(
+          base: base,
+          stops: toStops,
+          movingTour: movingTour,
+          maxKm: toMaxKm,
+          hadInitialMustSee: toHadInitialMustSee,
+        );
+  }
+
+  // ===================== STEP2 LOYALTY HELPERS =====================
+
+  double _avgDistanceToGroup(Poi candidate, List<Poi> group) {
+    if (group.isEmpty) return double.infinity;
+    double sum = 0;
+    for (final p in group) {
+      sum += _distKm(candidate.location, p.location);
+    }
+    return sum / group.length;
+  }
+
+  bool _passesClusterLoyalty({
+    required Poi candidate,
+    required int fromDay,
+    required int toDay,
+    required List<List<Poi>> originalBuckets,
+    required List<Poi> currentToList,
+  }) {
+    final originGroup = List<Poi>.from(originalBuckets[fromDay])
+      ..removeWhere((p) => p.id == candidate.id);
+
+    if (originGroup.isEmpty) return true;
+    if (currentToList.isEmpty) return true;
+
+    final originAffinity = _avgDistanceToGroup(candidate, originGroup);
+    final targetAffinity = _avgDistanceToGroup(candidate, currentToList);
+
+    const double loyaltyMarginKm = 25.0;
+
+    if (targetAffinity > originAffinity + loyaltyMarginKm) {
+      return false;
+    }
+
+    if (targetAffinity > 70.0) {
+      return false;
+    }
+
+    return true;
+  }
+
   // ===================== SUGGEST DAYS COUNT =====================
 
   int suggestDaysCountConsideringWeather({
@@ -331,17 +448,11 @@ class PlannerEngine {
 
     final mustSee = List<Poi>.from(input.mustSee);
 
-    final clusters = _clusterMustSeeByGeo(
-      mustSee,
-      k: math.min(daysCount, math.max(1, mustSee.length)),
-      origin: input.startPoint,
-    );
-
-    final orderedClusters = _orderClustersForwardIfMovingTour(
-      clusters: clusters,
-      origin: input.startPoint,
-      movingTour: input.mode == TripMode.movingTour,
-      allMustSee: mustSee,
+    final buckets = _buildInitialDayBuckets(
+      input: input,
+      days: days,
+      weatherMap: weatherMap,
+      mustSee: mustSee,
     );
 
     final carryOver = <Poi>[];
@@ -361,7 +472,7 @@ class PlannerEngine {
       );
       final maxStops = _maxStopsForProfile(input);
 
-      final raw = (i < orderedClusters.length) ? orderedClusters[i] : <Poi>[];
+      final raw = (i < buckets.length) ? buckets[i] : <Poi>[];
 
       final merged = <Poi>[...carryOver, ...raw];
       carryOver.clear();
@@ -440,20 +551,26 @@ class PlannerEngine {
 
     final mustSee = List<Poi>.from(input.mustSee);
 
-    final clusters = _clusterMustSeeByGeo(
-      mustSee,
-      k: input.daysCount,
-      origin: input.startPoint,
+    final orderedClusters = _buildInitialDayBuckets(
+      input: input,
+      days: days,
+      weatherMap: weatherMap,
+      mustSee: mustSee,
+    );
+
+    final originalBuckets = List<List<Poi>>.generate(
+      orderedClusters.length,
+          (i) => List<Poi>.from(orderedClusters[i]),
     );
 
     final hadInitialMustSeeByDay = List<bool>.generate(
       input.daysCount,
-          (i) => clusters[i].isNotEmpty,
+          (i) => orderedClusters[i].isNotEmpty,
     );
 
     final dayBuckets = List.generate(
       input.daysCount,
-          (i) => <Poi>[...clusters[i]],
+          (i) => <Poi>[...orderedClusters[i]],
     );
 
     for (int i = 0; i < dayBuckets.length; i++) {
@@ -461,7 +578,7 @@ class PlannerEngine {
     }
 
     // ==============================
-    // STEP 2: BALANCE BETWEEN DAYS
+    // STEP 2: SMART BALANCE + CLUSTER LOYALTY
     // ==============================
 
     double effectiveMaxKm(int dayIndex) {
@@ -483,7 +600,6 @@ class PlannerEngine {
 
       for (int from = 0; from < dayBuckets.length; from++) {
         final fromList = dayBuckets[from];
-
         if (fromList.isEmpty) continue;
 
         final fromKm = _estimateSingleDayKm(
@@ -504,18 +620,49 @@ class PlannerEngine {
           if (from + 1 < dayBuckets.length) from + 1,
         ];
 
+        double bestImprovement = 0;
+        int? bestTo;
+        int? bestFromIndex;
+        bool? bestUseEnd;
+        double? bestNewKm;
+        double? bestBeforeScore;
+        double? bestAfterScore;
+
         for (final to in toCandidates) {
           final toList = dayBuckets[to];
+
+          final beforeScore = _pairBalanceScore(
+            base: input.startPoint,
+            fromStops: fromList,
+            toStops: toList,
+            movingTour: input.mode == TripMode.movingTour,
+            fromMaxKm: effectiveMaxKm(from),
+            toMaxKm: effectiveMaxKm(to),
+            fromHadInitialMustSee: hadInitialMustSeeByDay[from],
+            toHadInitialMustSee: hadInitialMustSeeByDay[to],
+          );
 
           for (int i = fromList.length - 1; i >= 0; i--) {
             final candidate = fromList[i];
 
-            // DAY CANNOT BECOME EMPTY:
-            // ja šajā dienā sākotnēji bija must-see un šobrīd palicis tikai 1,
-            // tad to nedrīkst pārbīdīt prom.
             if (fromList.length == 1 && hadInitialMustSeeByDay[from]) {
               continue;
             }
+
+            if (!_passesClusterLoyalty(
+              candidate: candidate,
+              fromDay: from,
+              toDay: to,
+              originalBuckets: originalBuckets,
+              currentToList: toList,
+            )) {
+              print(
+                'BAL SKIP loyalty: "${candidate.name}" from day $from -> day $to',
+              );
+              continue;
+            }
+
+            final newFrom = List<Poi>.from(fromList)..removeAt(i);
 
             final testToEnd = List<Poi>.from(toList)..add(candidate);
             final testToStart = <Poi>[candidate, ...toList];
@@ -532,45 +679,88 @@ class PlannerEngine {
               movingTour: input.mode == TripMode.movingTour,
             );
 
-            final useEnd = newKmEnd <= newKmStart;
-            final newKm = useEnd ? newKmEnd : newKmStart;
-
             if (toList.isNotEmpty) {
               final toCent = centroid(toList.map((e) => e.location).toList());
               final distToDay = _distKm(toCent, candidate.location);
               if (distToDay > 80) continue;
             }
 
-            if (newKm <= effectiveMaxKm(to)) {
-              print(
-                'BAL MOVE: "${candidate.name}" from day $from -> day $to  '
-                    'fromKm=$fromKm  newKm(to)=$newKm  maxTo=${effectiveMaxKm(to).toStringAsFixed(1)}',
+            void considerMove({
+              required List<Poi> newTo,
+              required bool useEnd,
+              required double newKmTo,
+            }) {
+              if (newKmTo > effectiveMaxKm(to)) return;
+
+              final afterScore = _pairBalanceScore(
+                base: input.startPoint,
+                fromStops: newFrom,
+                toStops: newTo,
+                movingTour: input.mode == TripMode.movingTour,
+                fromMaxKm: effectiveMaxKm(from),
+                toMaxKm: effectiveMaxKm(to),
+                fromHadInitialMustSee: hadInitialMustSeeByDay[from],
+                toHadInitialMustSee: hadInitialMustSeeByDay[to],
               );
 
-              fromList.removeAt(i);
+              final improvement = beforeScore - afterScore;
 
-              if (useEnd) {
-                dayBuckets[to].add(candidate);
-              } else {
-                dayBuckets[to].insert(0, candidate);
+              if (improvement > bestImprovement + 0.5) {
+                bestImprovement = improvement;
+                bestTo = to;
+                bestFromIndex = i;
+                bestUseEnd = useEnd;
+                bestNewKm = newKmTo;
+                bestBeforeScore = beforeScore;
+                bestAfterScore = afterScore;
               }
-
-              print(
-                'AFTER MOVE from=$from: ${fromList.map((p) => p.name).toList()}',
-              );
-              print(
-                'AFTER MOVE to=$to: ${dayBuckets[to].map((p) => p.name).toList()}',
-              );
-
-              changed = true;
-              break;
             }
-          }
 
-          if (changed) break;
+            considerMove(
+              newTo: testToEnd,
+              useEnd: true,
+              newKmTo: newKmEnd,
+            );
+
+            considerMove(
+              newTo: testToStart,
+              useEnd: false,
+              newKmTo: newKmStart,
+            );
+          }
         }
 
-        if (changed) break;
+        if (bestTo != null &&
+            bestFromIndex != null &&
+            bestUseEnd != null &&
+            bestNewKm != null) {
+          final candidate = dayBuckets[from][bestFromIndex!];
+          dayBuckets[from].removeAt(bestFromIndex!);
+
+          if (bestUseEnd!) {
+            dayBuckets[bestTo!].add(candidate);
+          } else {
+            dayBuckets[bestTo!].insert(0, candidate);
+          }
+
+          print(
+            'BAL MOVE: "${candidate.name}" from day $from -> day $bestTo '
+                'fromKm=$fromKm newKm(to)=$bestNewKm '
+                'scoreBefore=${bestBeforeScore?.toStringAsFixed(1)} '
+                'scoreAfter=${bestAfterScore?.toStringAsFixed(1)} '
+                'improvement=${bestImprovement.toStringAsFixed(1)}',
+          );
+
+          print(
+            'AFTER MOVE from=$from: ${dayBuckets[from].map((p) => p.name).toList()}',
+          );
+          print(
+            'AFTER MOVE to=$bestTo: ${dayBuckets[bestTo!].map((p) => p.name).toList()}',
+          );
+
+          changed = true;
+          break;
+        }
       }
     }
 
@@ -864,17 +1054,12 @@ class PlannerEngine {
     return _estimateKm(route).toDouble();
   }
 
-  // ===================== GEO CLUSTERING =====================
+  // ===================== STEP1 BEST-SPLIT =====================
 
-  List<List<Poi>> _clusterMustSeeByGeo(
-      List<Poi> mustSee, {
-        required int k,
-        required LatLon origin,
-      }) {
-    if (mustSee.isEmpty) {
-      return List.generate(k, (_) => []);
-    }
-
+  List<Poi> _buildOrderedMustSeeRoute({
+    required List<Poi> mustSee,
+    required LatLon origin,
+  }) {
     final remaining = List<Poi>.from(mustSee);
     final ordered = <Poi>[];
 
@@ -885,32 +1070,235 @@ class PlannerEngine {
             (a, b) =>
             _distKm(current, a.location).compareTo(_distKm(current, b.location)),
       );
-
       final next = remaining.removeAt(0);
       ordered.add(next);
       current = next.location;
     }
 
-    final clusters = List.generate(k, (_) => <Poi>[]);
+    return ordered;
+  }
 
-    final baseSize = ordered.length ~/ k;
-    final extra = ordered.length % k;
+  double _vectorX(LatLon a, LatLon b) => b.lon - a.lon;
+  double _vectorY(LatLon a, LatLon b) => b.lat - a.lat;
 
-    int index = 0;
+  double _antiZigzagPenalty({
+    required LatLon base,
+    required List<Poi> seg,
+  }) {
+    if (seg.length < 3) return 0;
 
-    for (int day = 0; day < k; day++) {
-      final size = baseSize + (day < extra ? 1 : 0);
+    final pts = <LatLon>[base, ...seg.map((e) => e.location)];
 
-      for (int i = 0; i < size; i++) {
-        if (index < ordered.length) {
-          clusters[day].add(ordered[index]);
-          index++;
+    double penalty = 0;
+
+    for (int i = 1; i < pts.length - 1; i++) {
+      final p0 = pts[i - 1];
+      final p1 = pts[i];
+      final p2 = pts[i + 1];
+
+      final v1x = _vectorX(p0, p1);
+      final v1y = _vectorY(p0, p1);
+      final v2x = _vectorX(p1, p2);
+      final v2y = _vectorY(p1, p2);
+
+      final dot = v1x * v2x + v1y * v2y;
+      final n1 = math.sqrt(v1x * v1x + v1y * v1y);
+      final n2 = math.sqrt(v2x * v2x + v2y * v2y);
+
+      if (n1 == 0 || n2 == 0) continue;
+
+      final cosTheta = (dot / (n1 * n2)).clamp(-1.0, 1.0);
+
+      // Ja cos < 0, maršruts taisa diezgan asu reversu / zigzag
+      if (cosTheta < 0) {
+        penalty += (-cosTheta) * 80.0;
+      }
+
+      // Pat vidēji asi pagriezieni lai arī saņem nelielu sodu
+      if (cosTheta < 0.35) {
+        penalty += (0.35 - cosTheta) * 18.0;
+      }
+    }
+
+    return penalty;
+  }
+
+  double _segmentScoreForDay({
+    required List<Poi> ordered,
+    required int start,
+    required int endExclusive,
+    required LatLon base,
+    required bool movingTour,
+    required double maxKm,
+  }) {
+    final seg = ordered.sublist(start, endExclusive);
+
+    if (seg.isEmpty) {
+      return 5000.0;
+    }
+
+    final km = _estimateSingleDayKm(
+      base: base,
+      stops: seg,
+      movingTour: movingTour,
+    );
+
+    final overflow = math.max(0.0, km - maxKm);
+    final overflowPenalty = overflow * 60.0;
+
+    final compactness = _segmentCompactness(seg, base);
+    final zigzagPenalty = _antiZigzagPenalty(base: base, seg: seg);
+
+    // Iepriekš bija pārāk vājš
+    final thinPenalty = seg.length == 1 ? 120.0 : 0.0;
+
+    return overflowPenalty + compactness + zigzagPenalty + thinPenalty;
+  }
+
+  List<List<Poi>> _bestSplitOrderedRoute({
+    required List<Poi> ordered,
+    required int daysCount,
+    required TripInput input,
+    required List<DateTime> days,
+    required Map<DateTime, WeatherDay> weatherMap,
+  }) {
+    if (ordered.isEmpty) {
+      return List.generate(daysCount, (_) => <Poi>[]);
+    }
+
+    final n = ordered.length;
+    final k = daysCount;
+
+    if (k >= n) {
+      final out = <List<Poi>>[];
+      for (final p in ordered) {
+        out.add([p]);
+      }
+      while (out.length < k) {
+        out.add(<Poi>[]);
+      }
+      return out;
+    }
+
+    final maxKmByDay = List<double>.generate(k, (i) {
+      final weather = weatherMap[_dayKey(days[i])];
+      return input.ignoreWeather
+          ? input.maxKmPerDay.toDouble()
+          : _effectiveMaxKmForDay(input: input, weather: weather);
+    });
+
+    const inf = 1e18;
+    final dp = List.generate(k + 1, (_) => List<double>.filled(n + 1, inf));
+    final cut = List.generate(k + 1, (_) => List<int>.filled(n + 1, -1));
+
+    dp[0][0] = 0;
+
+    for (int day = 1; day <= k; day++) {
+      for (int end = 1; end <= n; end++) {
+        for (int start = day - 1; start < end; start++) {
+          if (dp[day - 1][start] >= inf) continue;
+
+          final segScore = _segmentScoreForDay(
+            ordered: ordered,
+            start: start,
+            endExclusive: end,
+            base: input.startPoint,
+            movingTour: input.mode == TripMode.movingTour,
+            maxKm: maxKmByDay[day - 1],
+          );
+
+          final total = dp[day - 1][start] + segScore;
+          if (total < dp[day][end]) {
+            dp[day][end] = total;
+            cut[day][end] = start;
+          }
         }
       }
     }
 
-    return clusters;
+    int bestUsedDays = math.min(k, n);
+    double bestScore = dp[bestUsedDays][n];
+
+    for (int used = 1; used <= math.min(k, n); used++) {
+      if (dp[used][n] < bestScore) {
+        bestScore = dp[used][n];
+        bestUsedDays = used;
+      }
+    }
+
+    final segments = <List<Poi>>[];
+    int end = n;
+    int day = bestUsedDays;
+
+    while (day > 0 && end > 0) {
+      final start = cut[day][end];
+      if (start < 0) break;
+      segments.insert(0, ordered.sublist(start, end));
+      end = start;
+      day--;
+    }
+
+    while (segments.length < k) {
+      segments.add(<Poi>[]);
+    }
+
+    return segments;
   }
+
+  List<List<Poi>> _buildInitialDayBuckets({
+    required TripInput input,
+    required List<DateTime> days,
+    required Map<DateTime, WeatherDay> weatherMap,
+    required List<Poi> mustSee,
+  }) {
+    final ordered = _buildOrderedMustSeeRoute(
+      mustSee: mustSee,
+      origin: input.startPoint,
+    );
+
+    final best = _bestSplitOrderedRoute(
+      ordered: ordered,
+      daysCount: input.daysCount,
+      input: input,
+      days: days,
+      weatherMap: weatherMap,
+    );
+
+    final orderedClusters = _orderClustersForwardIfMovingTour(
+      clusters: best,
+      origin: input.startPoint,
+      movingTour: input.mode == TripMode.movingTour,
+      allMustSee: mustSee,
+    );
+
+    return orderedClusters;
+  }
+
+  double _segmentCompactness(List<Poi> segment, LatLon origin) {
+    if (segment.isEmpty) return 0;
+    if (segment.length == 1) {
+      return _distKm(origin, segment.first.location) * 0.5;
+    }
+
+    double route = 0;
+    LatLon current = origin;
+    for (final p in segment) {
+      route += _distKm(current, p.location);
+      current = p.location;
+    }
+
+    final c = centroid(segment.map((e) => e.location).toList());
+    double spread = 0;
+    for (final p in segment) {
+      spread += _distKm(c, p.location);
+    }
+    spread /= segment.length;
+
+    // Iepriekš bija par vāju
+    return route * 1.5 + spread * 4.0;
+  }
+
+  // ===================== ORDER CLUSTERS =====================
 
   List<List<Poi>> _orderClustersForwardIfMovingTour({
     required List<List<Poi>> clusters,
