@@ -7,7 +7,15 @@ import '../models/trip.dart';
 import '../models/weather.dart';
 
 class PlannerEngine {
+  static const bool _debugLogs = true;
+
   final Map<String, double> _distCache = {};
+
+  void _log(String msg) {
+    if (_debugLogs) {
+      print(msg);
+    }
+  }
 
   String _k(LatLon a, LatLon b) {
     double r(double x) => (x * 10000).roundToDouble() / 10000;
@@ -30,6 +38,14 @@ class PlannerEngine {
   List<DateTime> _datesBetween(DateTime start, int daysCount) {
     final d0 = DateTime(start.year, start.month, start.day);
     return List.generate(daysCount, (i) => d0.add(Duration(days: i)));
+  }
+
+  bool _isSyntheticPoi(Poi p) {
+    final id = p.id;
+    return id.startsWith('base_') ||
+        id.startsWith('base_end_') ||
+        id.startsWith('base_tmp') ||
+        id.startsWith('return_home_');
   }
 
   // ===================== WEATHER HELPERS =====================
@@ -158,6 +174,7 @@ class PlannerEngine {
       includeFillers: originalInput.includeFillers,
       maxKmPerDay: originalInput.maxKmPerDay,
       mustSee: remainingMustSee,
+      ignoreWeather: originalInput.ignoreWeather,
     );
 
     final newSegment = buildPlan(
@@ -178,12 +195,8 @@ class PlannerEngine {
       }
 
       for (final s in d.stops) {
-        final id = s.id;
-        if (id.startsWith('base_')) continue;
-        if (id.startsWith('base_end_')) continue;
-        if (id.startsWith('return_home_')) continue;
-        if (id.startsWith('base_tmp')) continue;
-        out.add(id);
+        if (_isSyntheticPoi(s)) continue;
+        out.add(s.id);
       }
     }
 
@@ -276,7 +289,7 @@ class PlannerEngine {
     return math.max(3.0, maxHours);
   }
 
-  // ===================== STEP2 SCORE HELPERS =====================
+  // ===================== BALANCE HELPERS =====================
 
   double _dayGeoSpreadPenalty({
     required LatLon base,
@@ -292,7 +305,7 @@ class PlannerEngine {
     for (final p in pts) {
       spread += _distKm(c, p);
     }
-    spread = spread / pts.length;
+    spread /= pts.length;
 
     final baseOffset = movingTour ? 0.0 : _distKm(base, c) * 0.10;
     return spread * 1.2 + baseOffset;
@@ -320,11 +333,19 @@ class PlannerEngine {
       movingTour: movingTour,
     );
 
-    final emptyPenalty = (hadInitialMustSee && stops.isEmpty) ? 5000.0 : 0.0;
-    final thinDayPenalty =
-    (hadInitialMustSee && stops.length == 1) ? 12.0 : 0.0;
+    final directionPenalty = _dayDirectionPenalty(
+      base: base,
+      stops: stops,
+    ) * 1.6;
 
-    return overflowPenalty + spreadPenalty + emptyPenalty + thinDayPenalty;
+    final emptyPenalty = (hadInitialMustSee && stops.isEmpty) ? 5000.0 : 0.0;
+    final thinDayPenalty = (hadInitialMustSee && stops.length == 1) ? 12.0 : 0.0;
+
+    return overflowPenalty +
+        spreadPenalty +
+        directionPenalty +
+        emptyPenalty +
+        thinDayPenalty;
   }
 
   double _pairBalanceScore({
@@ -353,7 +374,7 @@ class PlannerEngine {
         );
   }
 
-  // ===================== STEP2 LOYALTY HELPERS =====================
+  // ===================== CLUSTER LOYALTY HELPERS =====================
 
   double _avgDistanceToGroup(Poi candidate, List<Poi> group) {
     if (group.isEmpty) return double.infinity;
@@ -421,6 +442,7 @@ class PlannerEngine {
         includeFillers: input.includeFillers,
         maxKmPerDay: input.maxKmPerDay,
         mustSee: List<Poi>.from(input.mustSee),
+        ignoreWeather: input.ignoreWeather,
       );
 
       final ok = _canFitAllMustSeeWithWeather(
@@ -545,7 +567,7 @@ class PlannerEngine {
   }) {
     final days = _datesBetween(input.startDate, input.daysCount);
 
-    final weatherMap = {
+    final weatherMap = <DateTime, WeatherDay>{
       for (final w in weatherByDay) _dayKey(w.date): w,
     };
 
@@ -574,33 +596,52 @@ class PlannerEngine {
     );
 
     for (int i = 0; i < dayBuckets.length; i++) {
-      print('DAYBUCKET $i: ${dayBuckets[i].map((p) => p.name).toList()}');
+      _log('DAYBUCKET $i: ${dayBuckets[i].map((p) => p.name).toList()}');
     }
 
     // ==============================
-    // STEP 2: SMART BALANCE + CLUSTER LOYALTY
-    // ==============================
+// STEP 2: SOFT BALANCE V2
+// ==============================
 
-    double effectiveMaxKm(int dayIndex) {
-      final weather = weatherMap[_dayKey(days[dayIndex])];
-      return input.ignoreWeather
-          ? input.maxKmPerDay.toDouble()
-          : _effectiveMaxKmForDay(input: input, weather: weather);
-    }
+    final effectiveMaxKmByDay = List<double>.generate(
+      input.daysCount,
+          (i) {
+        final weather = weatherMap[_dayKey(days[i])];
+        return input.ignoreWeather
+            ? input.maxKmPerDay.toDouble()
+            : _effectiveMaxKmForDay(input: input, weather: weather);
+      },
+    );
 
-    print('=== STEP2 BALANCE START ===');
+    double effectiveMaxKm(int dayIndex) => effectiveMaxKmByDay[dayIndex];
+
+    _log('=== STEP2 SOFT BALANCE START ===');
     for (int d = 0; d < dayBuckets.length; d++) {
-      print('PRE BAL day=$d: ${dayBuckets[d].map((p) => p.name).toList()}');
+      _log('PRE BAL day=$d: ${dayBuckets[d].map((p) => p.name).toList()}');
     }
 
     bool changed = true;
+    int balancePass = 0;
+    const int maxBalancePasses = 24;
 
-    while (changed) {
+    while (changed && balancePass < maxBalancePasses) {
+      balancePass++;
       changed = false;
+
+      double bestImprovementOverall = 0;
+      int? bestFromDay;
+      int? bestToDay;
+      int? bestFromIndex;
+      bool? bestUseEnd;
+      double? bestBeforeScore;
+      double? bestAfterScore;
+      double? bestNewKmTo;
 
       for (int from = 0; from < dayBuckets.length; from++) {
         final fromList = dayBuckets[from];
         if (fromList.isEmpty) continue;
+
+        final fromMaxKm = effectiveMaxKm(from);
 
         final fromKm = _estimateSingleDayKm(
           base: input.startPoint,
@@ -608,39 +649,37 @@ class PlannerEngine {
           movingTour: input.mode == TripMode.movingTour,
         );
 
-        print(
-          'BAL CHECK from=$from fromKm=$fromKm max=${effectiveMaxKm(from).toStringAsFixed(1)} '
+        _log(
+          'BAL CHECK from=$from fromKm=$fromKm max=${fromMaxKm.toStringAsFixed(1)} '
               'fromList=${fromList.map((p) => p.name).toList()}',
         );
 
-        if (fromKm <= effectiveMaxKm(from)) continue;
-
-        final toCandidates = <int>[
+        final toCandidates = <int>{
           if (from - 1 >= 0) from - 1,
           if (from + 1 < dayBuckets.length) from + 1,
-        ];
-
-        double bestImprovement = 0;
-        int? bestTo;
-        int? bestFromIndex;
-        bool? bestUseEnd;
-        double? bestNewKm;
-        double? bestBeforeScore;
-        double? bestAfterScore;
+          if (from - 2 >= 0) from - 2,
+          if (from + 2 < dayBuckets.length) from + 2,
+        }.toList();
 
         for (final to in toCandidates) {
           final toList = dayBuckets[to];
+          final toMaxKm = effectiveMaxKm(to);
 
           final beforeScore = _pairBalanceScore(
             base: input.startPoint,
             fromStops: fromList,
             toStops: toList,
             movingTour: input.mode == TripMode.movingTour,
-            fromMaxKm: effectiveMaxKm(from),
-            toMaxKm: effectiveMaxKm(to),
+            fromMaxKm: fromMaxKm,
+            toMaxKm: toMaxKm,
             fromHadInitialMustSee: hadInitialMustSeeByDay[from],
             toHadInitialMustSee: hadInitialMustSeeByDay[to],
           );
+
+          LatLon? toCentroid;
+          if (toList.isNotEmpty) {
+            toCentroid = centroid(toList.map((e) => e.location).toList());
+          }
 
           for (int i = fromList.length - 1; i >= 0; i--) {
             final candidate = fromList[i];
@@ -649,17 +688,9 @@ class PlannerEngine {
               continue;
             }
 
-            if (!_passesClusterLoyalty(
-              candidate: candidate,
-              fromDay: from,
-              toDay: to,
-              originalBuckets: originalBuckets,
-              currentToList: toList,
-            )) {
-              print(
-                'BAL SKIP loyalty: "${candidate.name}" from day $from -> day $to',
-              );
-              continue;
+            if (toCentroid != null) {
+              final distToDay = _distKm(toCentroid, candidate.location);
+              if (distToDay > 80) continue;
             }
 
             final newFrom = List<Poi>.from(fromList)..removeAt(i);
@@ -679,40 +710,64 @@ class PlannerEngine {
               movingTour: input.mode == TripMode.movingTour,
             );
 
-            if (toList.isNotEmpty) {
-              final toCent = centroid(toList.map((e) => e.location).toList());
-              final distToDay = _distKm(toCent, candidate.location);
-              if (distToDay > 80) continue;
-            }
+            final mayFitAtLeastOne = newKmEnd <= toMaxKm || newKmStart <= toMaxKm;
+            if (!mayFitAtLeastOne) continue;
 
+            if (!_passesClusterLoyalty(
+              candidate: candidate,
+              fromDay: from,
+              toDay: to,
+              originalBuckets: originalBuckets,
+              currentToList: toList,
+            )) {
+              _log(
+                'BAL SKIP loyalty: "${candidate.name}" from day $from -> day $to',
+              );
+              continue;
+            }
+            if (!_isDirectionCompatibleWithDay(
+              base: input.startPoint,
+              dayStops: toList,
+              candidate: candidate,
+            )) {
+              _log(
+                'BAL SKIP direction: "${candidate.name}" from day $from -> day $to',
+              );
+              continue;
+            }
             void considerMove({
               required List<Poi> newTo,
               required bool useEnd,
               required double newKmTo,
             }) {
-              if (newKmTo > effectiveMaxKm(to)) return;
+              if (newKmTo > toMaxKm) return;
 
               final afterScore = _pairBalanceScore(
                 base: input.startPoint,
                 fromStops: newFrom,
                 toStops: newTo,
                 movingTour: input.mode == TripMode.movingTour,
-                fromMaxKm: effectiveMaxKm(from),
-                toMaxKm: effectiveMaxKm(to),
+                fromMaxKm: fromMaxKm,
+                toMaxKm: toMaxKm,
                 fromHadInitialMustSee: hadInitialMustSeeByDay[from],
                 toHadInitialMustSee: hadInitialMustSeeByDay[to],
               );
 
               final improvement = beforeScore - afterScore;
 
-              if (improvement > bestImprovement + 0.5) {
-                bestImprovement = improvement;
-                bestTo = to;
+              final bool fromWasOverflow = fromKm > fromMaxKm;
+              final double minImprovement = fromWasOverflow ? 0.5 : 4.0;
+
+              if (improvement > minImprovement &&
+                  improvement > bestImprovementOverall) {
+                bestImprovementOverall = improvement;
+                bestFromDay = from;
+                bestToDay = to;
                 bestFromIndex = i;
                 bestUseEnd = useEnd;
-                bestNewKm = newKmTo;
                 bestBeforeScore = beforeScore;
                 bestAfterScore = afterScore;
+                bestNewKmTo = newKmTo;
               }
             }
 
@@ -729,44 +784,42 @@ class PlannerEngine {
             );
           }
         }
+      }
 
-        if (bestTo != null &&
-            bestFromIndex != null &&
-            bestUseEnd != null &&
-            bestNewKm != null) {
-          final candidate = dayBuckets[from][bestFromIndex!];
-          dayBuckets[from].removeAt(bestFromIndex!);
+      if (bestFromDay != null &&
+          bestToDay != null &&
+          bestFromIndex != null &&
+          bestUseEnd != null) {
+        final candidate = dayBuckets[bestFromDay!][bestFromIndex!];
+        final fromBeforeKm = _estimateSingleDayKm(
+          base: input.startPoint,
+          stops: dayBuckets[bestFromDay!],
+          movingTour: input.mode == TripMode.movingTour,
+        );
 
-          if (bestUseEnd!) {
-            dayBuckets[bestTo!].add(candidate);
-          } else {
-            dayBuckets[bestTo!].insert(0, candidate);
-          }
+        dayBuckets[bestFromDay!].removeAt(bestFromIndex!);
 
-          print(
-            'BAL MOVE: "${candidate.name}" from day $from -> day $bestTo '
-                'fromKm=$fromKm newKm(to)=$bestNewKm '
-                'scoreBefore=${bestBeforeScore?.toStringAsFixed(1)} '
-                'scoreAfter=${bestAfterScore?.toStringAsFixed(1)} '
-                'improvement=${bestImprovement.toStringAsFixed(1)}',
-          );
-
-          print(
-            'AFTER MOVE from=$from: ${dayBuckets[from].map((p) => p.name).toList()}',
-          );
-          print(
-            'AFTER MOVE to=$bestTo: ${dayBuckets[bestTo!].map((p) => p.name).toList()}',
-          );
-
-          changed = true;
-          break;
+        if (bestUseEnd!) {
+          dayBuckets[bestToDay!].add(candidate);
+        } else {
+          dayBuckets[bestToDay!].insert(0, candidate);
         }
+
+        _log(
+          'BAL MOVE: "${candidate.name}" from day $bestFromDay -> day $bestToDay '
+              'fromKm=$fromBeforeKm newKm(to)=$bestNewKmTo '
+              'scoreBefore=${bestBeforeScore?.toStringAsFixed(1)} '
+              'scoreAfter=${bestAfterScore?.toStringAsFixed(1)} '
+              'improvement=${bestImprovementOverall.toStringAsFixed(1)}',
+        );
+
+        changed = true;
       }
     }
 
-    print('=== STEP2 BALANCE END ===');
+    _log('=== STEP2 SOFT BALANCE END ===');
     for (int d = 0; d < dayBuckets.length; d++) {
-      print('POST BAL day=$d: ${dayBuckets[d].map((p) => p.name).toList()}');
+      _log('POST BAL day=$d: ${dayBuckets[d].map((p) => p.name).toList()}');
     }
 
     // ==============================
@@ -820,20 +873,20 @@ class PlannerEngine {
           movingTour: input.mode == TripMode.movingTour,
         );
 
-        final fallbackRealPois = fallbackStops.where((p) {
-          return !p.id.startsWith('base_') && !p.id.startsWith('base_tmp');
-        }).length;
+        final fallbackRealPois =
+            fallbackStops.where((p) => !_isSyntheticPoi(p)).length;
 
         if (fallbackRealPois > 0) {
           finalStops = fallbackStops;
           fallbackIndoorUsed = true;
-          print('WEATHER FALLBACK DAY $i: '
+          _log('WEATHER FALLBACK DAY $i: '
               '${finalStops.map((p) => p.name).toList()}');
         }
       }
 
-      final allowFillers =
-          input.includeFillers && !hasRemainingMustSeeLater && !fallbackIndoorUsed;
+      final allowFillers = input.includeFillers &&
+          !hasRemainingMustSeeLater &&
+          !fallbackIndoorUsed;
 
       if (allowFillers) {
         finalStops = _fillStopsToHours(
@@ -852,7 +905,9 @@ class PlannerEngine {
       final estKm = _estimateKm(finalStops);
       final estHours = _estimateHours(finalStops);
 
-      print('FINAL DAY $i: km=$estKm stops=${finalStops.map((p) => p.name).toList()}');
+      _log(
+        'FINAL DAY $i: km=$estKm stops=${finalStops.map((p) => p.name).toList()}',
+      );
 
       final theme = _chooseTheme(
         weather: input.ignoreWeather ? null : weather,
@@ -879,11 +934,8 @@ class PlannerEngine {
       );
 
       if (input.mode == TripMode.movingTour) {
-        final realTravelStops = finalStops.where((p) {
-          return !p.id.startsWith('base_') &&
-              !p.id.startsWith('base_end_') &&
-              !p.id.startsWith('base_tmp');
-        }).toList();
+        final realTravelStops =
+        finalStops.where((p) => !_isSyntheticPoi(p)).toList();
 
         if (realTravelStops.isNotEmpty) {
           currentBase = realTravelStops.last.location;
@@ -932,8 +984,7 @@ class PlannerEngine {
       final km = _estimateKm(test);
       final hours = _estimateHours(test);
 
-      final realStopCount =
-          test.where((e) => !e.id.startsWith('base_tmp')).length;
+      final realStopCount = test.where((e) => !e.id.startsWith('base_tmp')).length;
 
       if (km > maxKm.round()) continue;
       if (hours > maxHours) continue;
@@ -1067,8 +1118,7 @@ class PlannerEngine {
 
     while (remaining.isNotEmpty) {
       remaining.sort(
-            (a, b) =>
-            _distKm(current, a.location).compareTo(_distKm(current, b.location)),
+            (a, b) => _distKm(current, a.location).compareTo(_distKm(current, b.location)),
       );
       final next = remaining.removeAt(0);
       ordered.add(next);
@@ -1080,7 +1130,289 @@ class PlannerEngine {
 
   double _vectorX(LatLon a, LatLon b) => b.lon - a.lon;
   double _vectorY(LatLon a, LatLon b) => b.lat - a.lat;
+  double _bearingRad(LatLon from, LatLon to) {
+    final dy = to.lat - from.lat;
+    final dx = to.lon - from.lon;
+    return math.atan2(dy, dx);
+  }
 
+  double _wrapAngleRad(double a) {
+    while (a <= -math.pi) {
+      a += 2 * math.pi;
+    }
+    while (a > math.pi) {
+      a -= 2 * math.pi;
+    }
+    return a;
+  }
+
+  double _radToDeg(double r) => r * 180.0 / math.pi;
+
+  double _meanDirectionRad({
+    required LatLon base,
+    required List<Poi> seg,
+  }) {
+    if (seg.isEmpty) return 0.0;
+
+    double sx = 0.0;
+    double sy = 0.0;
+
+    for (final p in seg) {
+      final a = _bearingRad(base, p.location);
+      sx += math.cos(a);
+      sy += math.sin(a);
+    }
+
+    if (sx == 0 && sy == 0) return 0.0;
+    return math.atan2(sy, sx);
+  }
+
+  double _averageAngularDeviationDeg({
+    required LatLon base,
+    required List<Poi> seg,
+    required double referenceAngleRad,
+  }) {
+    if (seg.isEmpty) return 0.0;
+
+    double sum = 0.0;
+    for (final p in seg) {
+      final a = _bearingRad(base, p.location);
+      final diff = _wrapAngleRad(a - referenceAngleRad).abs();
+      sum += _radToDeg(diff);
+    }
+    return sum / seg.length;
+  }
+
+  double _maxAngularDeviationDeg({
+    required LatLon base,
+    required List<Poi> seg,
+    required double referenceAngleRad,
+  }) {
+    double best = 0.0;
+    for (final p in seg) {
+      final a = _bearingRad(base, p.location);
+      final diff = _wrapAngleRad(a - referenceAngleRad).abs();
+      best = math.max(best, _radToDeg(diff));
+    }
+    return best;
+  }
+
+  double _avgPerpendicularOffsetKm({
+    required LatLon base,
+    required List<Poi> seg,
+    required double axisAngleRad,
+  }) {
+    if (seg.isEmpty) return 0.0;
+
+    final ux = math.cos(axisAngleRad);
+    final uy = math.sin(axisAngleRad);
+
+    double sum = 0.0;
+
+    for (final p in seg) {
+      final dist = _distKm(base, p.location);
+
+      final angle = _bearingRad(base, p.location);
+      final vx = math.cos(angle) * dist;
+      final vy = math.sin(angle) * dist;
+
+      final proj = vx * ux + vy * uy;
+      final px = vx - proj * ux;
+      final py = vy - proj * uy;
+      final perp = math.sqrt(px * px + py * py);
+
+      sum += perp;
+    }
+
+    return sum / seg.length;
+  }
+
+  double _dayDirectionPenalty({
+    required LatLon base,
+    required List<Poi> stops,
+  }) {
+    if (stops.length <= 1) return 0.0;
+
+    final meanDir = _meanDirectionRad(base: base, seg: stops);
+
+    final avgDevDeg = _averageAngularDeviationDeg(
+      base: base,
+      seg: stops,
+      referenceAngleRad: meanDir,
+    );
+
+    final maxDevDeg = _maxAngularDeviationDeg(
+      base: base,
+      seg: stops,
+      referenceAngleRad: meanDir,
+    );
+
+    final avgPerpKm = _avgPerpendicularOffsetKm(
+      base: base,
+      seg: stops,
+      axisAngleRad: meanDir,
+    );
+
+    double penalty = 0.0;
+
+    penalty += avgDevDeg * 6.0;
+
+    if (maxDevDeg > 30.0) {
+      penalty += (maxDevDeg - 30.0) * 14.0;
+    }
+
+    if (maxDevDeg > 55.0) {
+      penalty += (maxDevDeg - 55.0) * 22.0;
+    }
+
+    penalty += avgPerpKm * 2.5;
+
+    // 🔥 ŠĪ IR JAUNĀ DAĻA (branch span)
+    final branchSpanDeg = _maxPairwiseAngularSeparationDeg(
+      base: base,
+      stops: stops,
+    );
+
+    if (branchSpanDeg > 45.0) {
+      penalty += (branchSpanDeg - 45.0) * 18.0;
+    }
+
+    if (branchSpanDeg > 70.0) {
+      penalty += (branchSpanDeg - 70.0) * 30.0;
+    }
+    penalty += _sameCorridorPenalty(
+      base: base,
+      stops: stops,
+    );
+    return penalty;
+  }
+  double _maxPairwiseAngularSeparationDeg({
+    required LatLon base,
+    required List<Poi> stops,
+  }) {
+    if (stops.length <= 1) return 0.0;
+
+    final angles = stops
+        .map((p) => _bearingRad(base, p.location))
+        .toList();
+
+    double best = 0.0;
+
+    for (int i = 0; i < angles.length; i++) {
+      for (int j = i + 1; j < angles.length; j++) {
+        final diff = _radToDeg(_wrapAngleRad(angles[i] - angles[j]).abs());
+        if (diff > best) best = diff;
+      }
+    }
+
+    return best;
+  }
+  double _corridorDistanceKm({
+    required LatLon base,
+    required LatLon a,
+    required LatLon b,
+  }) {
+    final ax = _vectorX(base, a);
+    final ay = _vectorY(base, a);
+    final bx = _vectorX(base, b);
+    final by = _vectorY(base, b);
+
+    final aLen2 = ax * ax + ay * ay;
+    if (aLen2 == 0) return 0.0;
+
+    final proj = (bx * ax + by * ay) / aLen2;
+
+    final px = proj * ax;
+    final py = proj * ay;
+
+    final offX = bx - px;
+    final offY = by - py;
+
+    final degOffset = math.sqrt(offX * offX + offY * offY);
+
+    return degOffset * 111.0;
+  }
+
+  double _sameCorridorPenalty({
+    required LatLon base,
+    required List<Poi> stops,
+  }) {
+    if (stops.length <= 1) return 0.0;
+
+    double penalty = 0.0;
+
+    for (int i = 0; i < stops.length; i++) {
+      for (int j = i + 1; j < stops.length; j++) {
+        final a = stops[i];
+        final b = stops[j];
+
+        final da = _distKm(base, a.location);
+        final db = _distKm(base, b.location);
+
+        final near = da <= db ? a : b;
+        final far = da <= db ? b : a;
+
+        final angleNear = _bearingRad(base, near.location);
+        final angleFar = _bearingRad(base, far.location);
+        final angDiffDeg =
+        _radToDeg(_wrapAngleRad(angleFar - angleNear).abs());
+
+        final corridorOffsetKm = _corridorDistanceKm(
+          base: base,
+          a: near.location,
+          b: far.location,
+        );
+
+        if (angDiffDeg > 12.0) {
+          penalty += (angDiffDeg - 12.0) * 4.5;
+        }
+
+        if (corridorOffsetKm > 18.0) {
+          penalty += (corridorOffsetKm - 18.0) * 1.8;
+        }
+      }
+    }
+
+    return penalty;
+  }
+  bool _isDirectionCompatibleWithDay({
+    required LatLon base,
+    required List<Poi> dayStops,
+    required Poi candidate,
+  }) {
+    if (dayStops.isEmpty) return true;
+
+    if (dayStops.length == 1) {
+      final only = dayStops.first;
+      final a1 = _bearingRad(base, only.location);
+      final a2 = _bearingRad(base, candidate.location);
+      final diffDeg = _radToDeg(_wrapAngleRad(a2 - a1).abs());
+      return diffDeg <= 40.0;
+    }
+
+    final meanDir = _meanDirectionRad(base: base, seg: dayStops);
+
+    final existingAvgDev = _averageAngularDeviationDeg(
+      base: base,
+      seg: dayStops,
+      referenceAngleRad: meanDir,
+    );
+
+    final candAngle = _bearingRad(base, candidate.location);
+    final candDiffDeg = _radToDeg(_wrapAngleRad(candAngle - meanDir).abs());
+
+    final allowedDeg = (existingAvgDev + 18.0).clamp(28.0, 55.0);
+
+    if (candDiffDeg > allowedDeg) {
+      return false;
+    }
+
+    final test = <Poi>[...dayStops, candidate];
+    final beforePenalty = _dayDirectionPenalty(base: base, stops: dayStops);
+    final afterPenalty = _dayDirectionPenalty(base: base, stops: test);
+
+    return afterPenalty <= beforePenalty + 28.0;
+  }
   double _antiZigzagPenalty({
     required LatLon base,
     required List<Poi> seg,
@@ -1109,12 +1441,10 @@ class PlannerEngine {
 
       final cosTheta = (dot / (n1 * n2)).clamp(-1.0, 1.0);
 
-      // Ja cos < 0, maršruts taisa diezgan asu reversu / zigzag
       if (cosTheta < 0) {
         penalty += (-cosTheta) * 80.0;
       }
 
-      // Pat vidēji asi pagriezieni lai arī saņem nelielu sodu
       if (cosTheta < 0.35) {
         penalty += (0.35 - cosTheta) * 18.0;
       }
@@ -1148,11 +1478,14 @@ class PlannerEngine {
 
     final compactness = _segmentCompactness(seg, base);
     final zigzagPenalty = _antiZigzagPenalty(base: base, seg: seg);
-
-    // Iepriekš bija pārāk vājš
+    final directionPenalty = _dayDirectionPenalty(base: base, stops: seg) * 1.8;
     final thinPenalty = seg.length == 1 ? 120.0 : 0.0;
 
-    return overflowPenalty + compactness + zigzagPenalty + thinPenalty;
+    return overflowPenalty +
+        compactness +
+        zigzagPenalty +
+        directionPenalty +
+        thinPenalty;
   }
 
   List<List<Poi>> _bestSplitOrderedRoute({
@@ -1216,15 +1549,7 @@ class PlannerEngine {
       }
     }
 
-    int bestUsedDays = math.min(k, n);
-    double bestScore = dp[bestUsedDays][n];
-
-    for (int used = 1; used <= math.min(k, n); used++) {
-      if (dp[used][n] < bestScore) {
-        bestScore = dp[used][n];
-        bestUsedDays = used;
-      }
-    }
+    final bestUsedDays = math.min(k, n);
 
     final segments = <List<Poi>>[];
     int end = n;
@@ -1294,7 +1619,6 @@ class PlannerEngine {
     }
     spread /= segment.length;
 
-    // Iepriekš bija par vāju
     return route * 1.5 + spread * 4.0;
   }
 
@@ -1357,54 +1681,4 @@ class PlannerEngine {
     }
     return best;
   }
-
-  Map<String, double> _buildDistanceMatrix(List<Poi> pois) {
-    final map = <String, double>{};
-
-    for (int i = 0; i < pois.length; i++) {
-      for (int j = i + 1; j < pois.length; j++) {
-        final a = pois[i];
-        final b = pois[j];
-        final d = _haversine(a.location, b.location);
-        map['$i-$j'] = d;
-        map['$j-$i'] = d;
-      }
-    }
-    return map;
-  }
-
-  double _estimateSingleBaseKm(LatLon base, List<Poi> pois) {
-    double total = 0;
-    for (final p in pois) {
-      total += 2 * _haversine(base, p.location);
-    }
-    return total;
-  }
-
-  double _estimateMovingTourKm(List<Poi> pois) {
-    if (pois.length < 2) return 0;
-
-    double total = 0;
-    for (int i = 0; i < pois.length - 1; i++) {
-      total += _haversine(pois[i].location, pois[i + 1].location);
-    }
-    return total;
-  }
-
-  double _haversine(LatLon a, LatLon b) {
-    const earthRadius = 6371.0;
-    final dLat = _deg2rad(b.lat - a.lat);
-    final dLon = _deg2rad(b.lon - a.lon);
-
-    final h = math.sin(dLat / 2) * math.sin(dLat / 2) +
-        math.cos(_deg2rad(a.lat)) *
-            math.cos(_deg2rad(b.lat)) *
-            math.sin(dLon / 2) *
-            math.sin(dLon / 2);
-
-    final c = 2 * math.atan2(math.sqrt(h), math.sqrt(1 - h));
-    return earthRadius * c;
-  }
-
-  double _deg2rad(double deg) => deg * math.pi / 180.0;
 }
