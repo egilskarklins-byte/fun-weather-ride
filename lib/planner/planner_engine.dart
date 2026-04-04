@@ -848,9 +848,21 @@ class PlannerEngine {
         ...todaysMust,
       ];
 
+      final isLastDay = i == days.length - 1;
+
       if (input.mode == TripMode.singleBase) {
         baseStops.add(
           Poi(id: 'base_end_$i', name: 'Atpakaļ', location: base),
+        );
+      } else if (input.mode == TripMode.movingTour &&
+          input.returnToStart &&
+          isLastDay) {
+        baseStops.add(
+          Poi(
+            id: 'return_home_$i',
+            name: 'Atpakaļ',
+            location: input.startPoint,
+          ),
         );
       }
 
@@ -945,7 +957,59 @@ class PlannerEngine {
 
     return plans;
   }
+// ================= MOVING TOUR SUGGESTION =================
 
+  bool shouldSuggestMovingTour({
+    required TripInput input,
+    required List<DayPlan> plans,
+  }) {
+    if (input.mode != TripMode.singleBase) return false;
+    if (plans.isEmpty) return false;
+
+    int overflowDays = 0;
+    double worstOverflowRatio = 1.0;
+    double avgDayKm = 0.0;
+    int veryLongDays = 0;
+    int extremeDays = 0;
+
+    for (final day in plans) {
+      final km = day.estKm.toDouble();
+      avgDayKm += km;
+
+      final ratio = km / input.maxKmPerDay;
+      if (ratio > 1.0) overflowDays++;
+      if (ratio > worstOverflowRatio) {
+        worstOverflowRatio = ratio;
+      }
+
+      if (km >= 350.0) veryLongDays++;
+      if (km >= 450.0) extremeDays++;
+    }
+
+    avgDayKm /= plans.length;
+
+    int farPoiCount = 0;
+    int veryFarPoiCount = 0;
+
+    for (final poi in input.mustSee) {
+      final d = _distKm(input.startPoint, poi.location);
+
+      if (d >= 170.0) farPoiCount++;
+      if (d >= 220.0) veryFarPoiCount++;
+    }
+
+    if (overflowDays >= 2) return true;
+    if (worstOverflowRatio >= 1.20) return true;
+    if (avgDayKm >= 330.0) return true;
+
+    if (extremeDays >= 1) return true;
+    if (veryLongDays >= 2) return true;
+
+    if (veryFarPoiCount >= 1 && farPoiCount >= 2) return true;
+    if (farPoiCount >= 3) return true;
+
+    return false;
+  }
   // ===================== WEATHER FALLBACK =====================
 
   List<Poi> _buildIndoorFallbackStops({

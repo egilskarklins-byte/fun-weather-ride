@@ -41,6 +41,35 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
 
   bool _loading = false;
 
+// 👇 IELIEC ŠEIT
+  Future<bool> _showMovingTourSuggestionDialog() async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Ieteikums maršrutam'),
+          content: const Text(
+            'Izvēlētie punkti single-base režīmā ir pārāk tāli vai izkliedēti.\n\n'
+                'Moving tour režīmā maršruts būs daudz efektīvāks.\n\n'
+                'Vai pārslēgt uz moving tour?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Palikt single-base'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('Pārslēgt'),
+            ),
+          ],
+        );
+      },
+    );
+
+    return result ?? false;
+  }
+
   // -------------------- Start point autocomplete --------------------
   final TextEditingController _startCtrl = TextEditingController();
   final List<PlaceSuggestion> _startSuggestions = [];
@@ -973,7 +1002,34 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
         weatherByDay: weather,
         poiPool: poiPool,
       );
+      final shouldSuggestMoving = _engine.shouldSuggestMovingTour(
+        input: input,
+        plans: plans,
+      );
 
+      if (!mounted) return;
+
+      if (shouldSuggestMoving) {
+        final switchToMoving = await _showMovingTourSuggestionDialog();
+
+        if (!mounted) return;
+
+        if (switchToMoving) {
+          setState(() {
+            _controller.setMode(TripMode.movingTour);
+          });
+
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Pārslēgts uz moving tour. Nospied ģenerēt vēlreiz.',
+              ),
+            ),
+          );
+
+          return;
+        }
+      }
       print(">>> AFTER BUILD PLAN");
 
 
