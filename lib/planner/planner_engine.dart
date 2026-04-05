@@ -109,6 +109,28 @@ class PlannerEngine {
     return DayTheme.mixed;
   }
 
+
+  bool _isEffectivelyEmptyDay(DayPlan day) {
+    final realStops = day.stops.where((p) => !_isSyntheticPoi(p)).toList();
+    return realStops.isEmpty;
+  }
+
+  List<DayPlan> _removeEmptyDays(List<DayPlan> plans) {
+    final result = <DayPlan>[];
+
+    for (final day in plans) {
+      if (_isEffectivelyEmptyDay(day)) {
+        continue;
+      }
+      result.add(day);
+    }
+
+    return result;
+  }
+
+
+
+
   // ===================== REPLAN =====================
 
   List<DayPlan> replanFromDay({
@@ -137,8 +159,10 @@ class PlannerEngine {
 
     final prefix = existingPlans.sublist(0, idx);
 
-    final remainingDays = math.max(0, originalInput.daysCount - idx);
-    if (remainingDays == 0) return prefix;
+    final remainingDays = math.max(0, existingPlans.length - idx);
+    if (remainingDays == 0) {
+      return _removeEmptyDays(prefix);
+    }
 
     final alreadyVisited = <String>{...visitedPoiIds};
     alreadyVisited.addAll(_collectVisitedPoiIdsFromPlans(prefix));
@@ -153,8 +177,13 @@ class PlannerEngine {
     if (originalInput.mode == TripMode.singleBase) {
       replStartPoint = originalInput.startPoint;
     } else {
-      final plannedBase = existingPlans[idx].base;
-      replStartPoint = currentLocation ?? plannedBase;
+      if (currentLocation != null) {
+        replStartPoint = currentLocation;
+      } else if (prefix.isNotEmpty) {
+        replStartPoint = prefix.last.base;
+      } else {
+        replStartPoint = existingPlans[idx].base;
+      }
     }
 
     final newStartDate = _dayKey(existingPlans[idx].date);
@@ -177,13 +206,19 @@ class PlannerEngine {
       ignoreWeather: originalInput.ignoreWeather,
     );
 
+    final weatherForReplan = newWeatherByDay.length > remainingDays
+        ? newWeatherByDay.sublist(0, remainingDays)
+        : newWeatherByDay;
+
     final newSegment = buildPlan(
       input: newInput,
-      weatherByDay: newWeatherByDay,
+      weatherByDay: weatherForReplan,
       poiPool: poiPool,
     );
 
-    return [...prefix, ...newSegment];
+    final combined = [...prefix, ...newSegment];
+
+    return _removeEmptyDays(combined);
   }
 
   Set<String> _collectVisitedPoiIdsFromPlans(List<DayPlan> plans) {
@@ -1706,23 +1741,34 @@ class PlannerEngine {
         return _distKm(origin, ca).compareTo(_distKm(origin, cb));
       });
     } else {
-      final axisPoint = _farthestPointFrom(
-        origin,
-        allMustSee.map((e) => e.location).toList(),
-      ) ??
-          origin;
+      final remaining = List<List<Poi>>.from(nonEmpty);
+      final ordered = <List<Poi>>[];
+      LatLon current = origin;
 
-      double score(LatLon p) {
-        final dOrigin = _distKm(origin, p);
-        final dAxis = _distKm(axisPoint, p);
-        return dOrigin - 0.35 * dAxis;
+      while (remaining.isNotEmpty) {
+        int bestIndex = 0;
+        double bestDist = double.infinity;
+
+        for (int i = 0; i < remaining.length; i++) {
+          final c = centroid(remaining[i].map((e) => e.location).toList());
+          final d = _distKm(current, c);
+
+          if (d < bestDist) {
+            bestDist = d;
+            bestIndex = i;
+          }
+        }
+
+        final next = remaining.removeAt(bestIndex);
+        ordered.add(next);
+
+        final nextCentroid = centroid(next.map((e) => e.location).toList());
+        current = nextCentroid;
       }
 
-      nonEmpty.sort((a, b) {
-        final ca = centroid(a.map((e) => e.location).toList());
-        final cb = centroid(b.map((e) => e.location).toList());
-        return score(ca).compareTo(score(cb));
-      });
+      nonEmpty
+        ..clear()
+        ..addAll(ordered);
     }
 
     for (int i = 0; i < emptyCount; i++) {

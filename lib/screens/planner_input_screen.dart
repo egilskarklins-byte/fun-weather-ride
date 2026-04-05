@@ -1034,14 +1034,16 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
 
 
       if (!mounted) return;
-      await Navigator.of(context).push(
+      Navigator.push(
+        context,
         MaterialPageRoute(
           builder: (_) => ResultsScreen(
             plans: plans,
             input: input,
-            maxKmPerDay: input.maxKmPerDay,
+            weatherByDay: weather,
+            poiPool: poiPool,
+            maxKmPerDay: input.maxKmPerDay.round(),
           ),
-
         ),
       );
     } finally {

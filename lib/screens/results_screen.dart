@@ -12,12 +12,16 @@ import '../models/weather.dart';
 class ResultsScreen extends StatefulWidget {
   final List<DayPlan> plans;
   final TripInput input;
+  final List<WeatherDay> weatherByDay;
+  final List<Poi> poiPool;
   final int? maxKmPerDay;
 
   const ResultsScreen({
     super.key,
     required this.plans,
     required this.input,
+    required this.weatherByDay,
+    required this.poiPool,
     this.maxKmPerDay,
   });
 
@@ -28,10 +32,11 @@ class ResultsScreen extends StatefulWidget {
 class _ResultsScreenState extends State<ResultsScreen> {
   late List<DayPlan> _plans;
 
-  final Set<String> _visited = {};
-  final Set<String> _skipped = {};
+  final Set<String> _visitedPoiIds = <String>{};
+  final Set<String> _skippedPoiIds = <String>{};
 
   final PlannerEngine _engine = PlannerEngine();
+
   final WeatherApiService _weatherApi = const WeatherApiService();
   final PoiCatalogService _poiCatalog = PoiCatalogService();
 
@@ -40,9 +45,46 @@ class _ResultsScreenState extends State<ResultsScreen> {
   @override
   void initState() {
     super.initState();
-    _plans = List.of(widget.plans);
+    _plans = List<DayPlan>.from(widget.plans);
   }
 
+  Future<void> _replanFromDay({
+    required DateTime fromDate,
+  }) async {
+    final newPlans = _engine.replanFromDay(
+      originalInput: widget.input,
+      existingPlans: _plans,
+      fromDate: fromDate,
+      newWeatherByDay: widget.weatherByDay,
+      poiPool: widget.poiPool,
+      visitedPoiIds: _visitedPoiIds,
+      skippedPoiIds: _skippedPoiIds,
+    );
+
+    if (!mounted) return;
+
+    setState(() {
+      _plans = newPlans;
+    });
+  }
+
+  Future<void> _markVisited({
+    required Poi poi,
+    required DateTime fromDate,
+  }) async {
+    _skippedPoiIds.remove(poi.id);
+    _visitedPoiIds.add(poi.id);
+    await _replanFromDay(fromDate: fromDate);
+  }
+
+  Future<void> _markSkipped({
+    required Poi poi,
+    required DateTime fromDate,
+  }) async {
+    _visitedPoiIds.remove(poi.id);
+    _skippedPoiIds.add(poi.id);
+    await _replanFromDay(fromDate: fromDate);
+  }
   // ================= MUST-SEE CONSISTENCY =================
 
   Set<String> get _selectedMustSeeIds =>
@@ -227,6 +269,9 @@ class _ResultsScreenState extends State<ResultsScreen> {
                   widget.maxKmPerDay != null &&
                       p.estKm > widget.maxKmPerDay!;
 
+              final visibleStops = p.stops
+                  .where((s) => !_isSyntheticPoi(s))
+                  .toList();
               return Card(
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(16),
@@ -293,10 +338,12 @@ class _ResultsScreenState extends State<ResultsScreen> {
 
                       const Divider(height: 20),
 
-                      ...p.stops.map((s) {
+                      ...p.stops
+                          .where((s) => !_isSyntheticPoi(s))
+                          .map((s) {
 
-                        final isVisited = _visited.contains(s.id);
-                        final isSkipped = _skipped.contains(s.id);
+                        final isVisited = _visitedPoiIds.contains(s.id);
+                        final isSkipped = _skippedPoiIds.contains(s.id);
 
                         return Row(
                           children: [
@@ -313,11 +360,11 @@ class _ResultsScreenState extends State<ResultsScreen> {
                                     : Colors.grey,
                               ),
 
-                              onPressed: () {
-                                setState(() {
-                                  _visited.add(s.id);
-                                  _skipped.remove(s.id);
-                                });
+                              onPressed: () async {
+                                await _markVisited(
+                                  poi: s,
+                                  fromDate: p.date,
+                                );
                               },
                             ),
 
@@ -329,11 +376,11 @@ class _ResultsScreenState extends State<ResultsScreen> {
                                     : Colors.grey,
                               ),
 
-                              onPressed: () {
-                                setState(() {
-                                  _skipped.add(s.id);
-                                  _visited.remove(s.id);
-                                });
+                              onPressed: () async {
+                                await _markSkipped(
+                                  poi: s,
+                                  fromDate: p.date,
+                                );
                               },
                             ),
                           ],
@@ -351,7 +398,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
                           label: const Text('Atvērt Google Maps'),
 
                           onPressed: () =>
-                              _openInGoogleMaps(p.stops),
+                              _openInGoogleMaps(p.stops)
                         ),
                       ),
                     ],
@@ -367,6 +414,13 @@ class _ResultsScreenState extends State<ResultsScreen> {
 
   // ================= WEATHER FORMAT =================
 
+  bool _isSyntheticPoi(Poi poi) {
+    final id = poi.id.toLowerCase();
+    return id.startsWith('base_') ||
+        id.startsWith('base_end_') ||
+        id.startsWith('base_tmp_') ||
+        id.startsWith('return_home_');
+  }
   String _formatWeather(WeatherDay w) {
     final t = '${w.tempC.round()}°C';
 
@@ -413,8 +467,8 @@ class _ResultsScreenState extends State<ResultsScreen> {
         fromDate: today,
         newWeatherByDay: weather,
         poiPool: poiPool,
-        visitedPoiIds: _visited,
-        skippedPoiIds: _skipped,
+        visitedPoiIds: _visitedPoiIds,
+        skippedPoiIds: _skippedPoiIds,
       );
 
       if (!mounted) return;
