@@ -28,6 +28,9 @@ class _SectionScreenState extends State<SectionScreen> {
   bool _isPlaying = false;
   bool _isLoading = true;
 
+  int? _selectedAnswer;
+  bool _answered = false;
+
   late int _currentIndex;
 
   StorySection get section => widget.sections[_currentIndex];
@@ -67,6 +70,8 @@ class _SectionScreenState extends State<SectionScreen> {
         _isLoading = true;
         _position = Duration.zero;
         _duration = Duration.zero;
+        _selectedAnswer = null;
+        _answered = false;
       });
 
       await _player.stop();
@@ -80,6 +85,7 @@ class _SectionScreenState extends State<SectionScreen> {
         await _player.play();
       }
     } catch (_) {
+      if (!mounted) return;
       setState(() => _isLoading = false);
     }
   }
@@ -100,14 +106,20 @@ class _SectionScreenState extends State<SectionScreen> {
   Future<void> _next() async {
     if (_currentIndex >= widget.sections.length - 1) return;
 
-    setState(() => _currentIndex++);
+    setState(() {
+      _currentIndex++;
+    });
+
     await _loadAudio(autoplay: true);
   }
 
   Future<void> _prev() async {
     if (_currentIndex == 0) return;
 
-    setState(() => _currentIndex--);
+    setState(() {
+      _currentIndex--;
+    });
+
     await _loadAudio(autoplay: true);
   }
 
@@ -143,6 +155,7 @@ class _SectionScreenState extends State<SectionScreen> {
                       fit: BoxFit.contain,
                     ),
                   ),
+
                   const SizedBox(height: 24),
 
                   Text(
@@ -152,6 +165,103 @@ class _SectionScreenState extends State<SectionScreen> {
                       height: 1.5,
                     ),
                   ),
+
+                  if (s.question != null &&
+                      s.answers != null &&
+                      s.correctIndex != null) ...[
+                    const SizedBox(height: 28),
+
+                    Card(
+                      elevation: 3,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              "Jautājums",
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+
+                            const SizedBox(height: 10),
+
+                            Text(
+                              s.question!,
+                              style: const TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+
+                            const SizedBox(height: 14),
+
+                            ...List.generate(s.answers!.length, (index) {
+                              final isSelected = _selectedAnswer == index;
+                              final isCorrect = index == s.correctIndex;
+
+                              Color? buttonColor;
+
+                              if (_answered) {
+                                if (isCorrect) {
+                                  buttonColor = Colors.green.shade300;
+                                } else if (isSelected) {
+                                  buttonColor = Colors.red.shade300;
+                                }
+                              }
+
+                              return Container(
+                                width: double.infinity,
+                                margin: const EdgeInsets.symmetric(vertical: 5),
+                                child: ElevatedButton(
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: buttonColor,
+                                    foregroundColor: Colors.black,
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 14,
+                                      horizontal: 12,
+                                    ),
+                                  ),
+                                  onPressed: _answered
+                                      ? null
+                                      : () {
+                                    setState(() {
+                                      _selectedAnswer = index;
+                                      _answered = true;
+                                    });
+                                  },
+                                  child: Text(
+                                    s.answers![index],
+                                    style: const TextStyle(fontSize: 17),
+                                  ),
+                                ),
+                              );
+                            }),
+
+                            if (_answered) ...[
+                              const SizedBox(height: 12),
+                              Text(
+                                _selectedAnswer == s.correctIndex
+                                    ? "Pareizi! 🎉"
+                                    : "Nepareizi. Pareizā atbilde ir: ${s.answers![s.correctIndex!]}",
+                                style: const TextStyle(
+                                  fontSize: 17,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+
+                  const SizedBox(height: 28),
 
                   Slider(
                     min: 0,
@@ -176,7 +286,6 @@ class _SectionScreenState extends State<SectionScreen> {
 
                   const SizedBox(height: 20),
 
-                  // 🔁 sadaļu navigācija
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -195,7 +304,6 @@ class _SectionScreenState extends State<SectionScreen> {
 
                   const SizedBox(height: 10),
 
-                  // 🎧 audio kontrole
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
@@ -205,7 +313,8 @@ class _SectionScreenState extends State<SectionScreen> {
                           final newPos =
                               _position - const Duration(seconds: 10);
                           await _player.seek(
-                              newPos < Duration.zero ? Duration.zero : newPos);
+                            newPos < Duration.zero ? Duration.zero : newPos,
+                          );
                         },
                       ),
 
@@ -235,7 +344,8 @@ class _SectionScreenState extends State<SectionScreen> {
                           final newPos =
                               _position + const Duration(seconds: 10);
                           await _player.seek(
-                              newPos > _duration ? _duration : newPos);
+                            newPos > _duration ? _duration : newPos,
+                          );
                         },
                       ),
                     ],
@@ -243,7 +353,6 @@ class _SectionScreenState extends State<SectionScreen> {
 
                   const SizedBox(height: 10),
 
-                  // 🔁 repeat
                   Center(
                     child: TextButton.icon(
                       onPressed: _repeat,

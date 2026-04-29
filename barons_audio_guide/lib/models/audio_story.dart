@@ -16,10 +16,18 @@ class StorySection {
   final String audioPath;
   final List<String> images;
 
+  final String? question;
+  final List<String>? answers;
+  final int? correctIndex;
+
   const StorySection({
     required this.title,
     required this.text,
     required this.audioPath,
     required this.images,
+
+    this.question,
+    this.answers,
+    this.correctIndex,
   });
 }

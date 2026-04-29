@@ -36,6 +36,13 @@ Tomēr viņa dzīvē agri parādījās interese par zināšanām, valodu un grā
 
 Šī interese vēlāk kļuva par pamatu viņa lielajam mūža darbam.
 """,
+        question: "Cik bērnu bija Krišjāņa Barona ģimenē?",
+        answers: [
+          "Septiņi",
+          "Astoņi",
+          "Desmit",
+        ],
+        correctIndex: 1,
       ),
       StorySection(
         title: "Studijas",
@@ -70,6 +77,13 @@ Tieši šajā laikā Barons arvien vairāk pievērsās tautasdziesmām un sāka 
 
 Dzīve svešumā palīdzēja viņam saprast, cik svarīgi ir saglabāt latviešu kultūru un identitāti.
 """,
+        question: "Kur Barons dzīvoja un strādāja?",
+        answers: [
+          "Maskavā",
+          "Pleskavā",
+          "Pēterburgā",
+        ],
+        correctIndex: 2,
       ),
       StorySection(
         title: "Dainu vākšana",
@@ -102,6 +116,13 @@ Katra lapiņa ir kā daļa no Latvijas stāsta.
 
 Barons tās rūpīgi sakārtoja, lai nekas nepazustu.
 """,
+        question: "Kur tika glabātas tautasdziesmas?",
+        answers: [
+          "Grāmatā",
+          "Skapī",
+          "Somā",
+        ],
+        correctIndex: 1,
       ),
       StorySection(
         title: "Mantojums",
