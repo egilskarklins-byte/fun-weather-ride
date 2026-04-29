@@ -123,6 +123,40 @@ class _SectionScreenState extends State<SectionScreen> {
     await _loadAudio(autoplay: true);
   }
 
+  Color _quizButtonColor({
+    required int index,
+    required int correctIndex,
+  }) {
+    if (!_answered) {
+      return Colors.blue.shade600;
+    }
+
+    if (index == correctIndex) {
+      return Colors.green.shade400;
+    }
+
+    if (index == _selectedAnswer) {
+      return Colors.red.shade400;
+    }
+
+    return Colors.grey.shade300;
+  }
+
+  Color _quizTextColor({
+    required int index,
+    required int correctIndex,
+  }) {
+    if (!_answered) {
+      return Colors.white;
+    }
+
+    if (index == correctIndex || index == _selectedAnswer) {
+      return Colors.white;
+    }
+
+    return Colors.black87;
+  }
+
   @override
   void dispose() {
     _player.dispose();
@@ -155,9 +189,7 @@ class _SectionScreenState extends State<SectionScreen> {
                       fit: BoxFit.contain,
                     ),
                   ),
-
                   const SizedBox(height: 24),
-
                   Text(
                     s.text,
                     style: const TextStyle(
@@ -165,12 +197,10 @@ class _SectionScreenState extends State<SectionScreen> {
                       height: 1.5,
                     ),
                   ),
-
                   if (s.question != null &&
                       s.answers != null &&
                       s.correctIndex != null) ...[
                     const SizedBox(height: 28),
-
                     Card(
                       elevation: 3,
                       shape: RoundedRectangleBorder(
@@ -188,9 +218,7 @@ class _SectionScreenState extends State<SectionScreen> {
                                 fontWeight: FontWeight.bold,
                               ),
                             ),
-
                             const SizedBox(height: 10),
-
                             Text(
                               s.question!,
                               style: const TextStyle(
@@ -198,22 +226,17 @@ class _SectionScreenState extends State<SectionScreen> {
                                 fontWeight: FontWeight.bold,
                               ),
                             ),
-
                             const SizedBox(height: 14),
-
                             ...List.generate(s.answers!.length, (index) {
-                              final isSelected = _selectedAnswer == index;
-                              final isCorrect = index == s.correctIndex;
+                              final buttonColor = _quizButtonColor(
+                                index: index,
+                                correctIndex: s.correctIndex!,
+                              );
 
-                              Color? buttonColor;
-
-                              if (_answered) {
-                                if (isCorrect) {
-                                  buttonColor = Colors.green.shade300;
-                                } else if (isSelected) {
-                                  buttonColor = Colors.red.shade300;
-                                }
-                              }
+                              final textColor = _quizTextColor(
+                                index: index,
+                                correctIndex: s.correctIndex!,
+                              );
 
                               return Container(
                                 width: double.infinity,
@@ -221,7 +244,9 @@ class _SectionScreenState extends State<SectionScreen> {
                                 child: ElevatedButton(
                                   style: ElevatedButton.styleFrom(
                                     backgroundColor: buttonColor,
-                                    foregroundColor: Colors.black,
+                                    disabledBackgroundColor: buttonColor,
+                                    foregroundColor: textColor,
+                                    disabledForegroundColor: textColor,
                                     padding: const EdgeInsets.symmetric(
                                       vertical: 14,
                                       horizontal: 12,
@@ -242,7 +267,6 @@ class _SectionScreenState extends State<SectionScreen> {
                                 ),
                               );
                             }),
-
                             if (_answered) ...[
                               const SizedBox(height: 12),
                               Text(
@@ -260,9 +284,7 @@ class _SectionScreenState extends State<SectionScreen> {
                       ),
                     ),
                   ],
-
                   const SizedBox(height: 28),
-
                   Slider(
                     min: 0,
                     max: _duration.inSeconds == 0
@@ -275,7 +297,6 @@ class _SectionScreenState extends State<SectionScreen> {
                       await _player.seek(Duration(seconds: value.toInt()));
                     },
                   ),
-
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -283,9 +304,7 @@ class _SectionScreenState extends State<SectionScreen> {
                       Text(_formatTime(_duration)),
                     ],
                   ),
-
                   const SizedBox(height: 20),
-
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -301,9 +320,7 @@ class _SectionScreenState extends State<SectionScreen> {
                       ),
                     ],
                   ),
-
                   const SizedBox(height: 10),
-
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
@@ -317,9 +334,7 @@ class _SectionScreenState extends State<SectionScreen> {
                           );
                         },
                       ),
-
                       const SizedBox(width: 20),
-
                       ElevatedButton.icon(
                         onPressed: _isLoading ? null : _toggleAudio,
                         icon: Icon(
@@ -335,9 +350,7 @@ class _SectionScreenState extends State<SectionScreen> {
                               : "Turpināt",
                         ),
                       ),
-
                       const SizedBox(width: 20),
-
                       IconButton(
                         icon: const Icon(Icons.forward_10),
                         onPressed: () async {
@@ -350,9 +363,7 @@ class _SectionScreenState extends State<SectionScreen> {
                       ),
                     ],
                   ),
-
                   const SizedBox(height: 10),
-
                   Center(
                     child: TextButton.icon(
                       onPressed: _repeat,
