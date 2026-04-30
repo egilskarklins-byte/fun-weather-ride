@@ -5,6 +5,13 @@ import 'package:just_audio/just_audio.dart';
 
 import '../models/audio_story.dart';
 
+enum SectionTab {
+  photo,
+  text,
+  audio,
+  quiz,
+}
+
 class SectionScreen extends StatefulWidget {
   const SectionScreen({
     super.key,
@@ -32,6 +39,7 @@ class _SectionScreenState extends State<SectionScreen> {
   bool _answered = false;
 
   late int _currentIndex;
+  SectionTab _selectedTab = SectionTab.photo;
 
   StorySection get section => widget.sections[_currentIndex];
 
@@ -108,9 +116,10 @@ class _SectionScreenState extends State<SectionScreen> {
 
     setState(() {
       _currentIndex++;
+      _selectedTab = SectionTab.photo;
     });
 
-    await _loadAudio(autoplay: true);
+    await _loadAudio(autoplay: false);
   }
 
   Future<void> _prev() async {
@@ -118,9 +127,10 @@ class _SectionScreenState extends State<SectionScreen> {
 
     setState(() {
       _currentIndex--;
+      _selectedTab = SectionTab.photo;
     });
 
-    await _loadAudio(autoplay: true);
+    await _loadAudio(autoplay: false);
   }
 
   Color _quizButtonColor({
@@ -180,201 +190,362 @@ class _SectionScreenState extends State<SectionScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(18),
-                    child: Image.asset(
-                      s.images.first,
-                      width: double.infinity,
-                      height: 260,
-                      fit: BoxFit.contain,
-                    ),
-                  ),
-                  const SizedBox(height: 24),
                   Text(
-                    s.text,
+                    s.title,
                     style: const TextStyle(
-                      fontSize: 20,
-                      height: 1.5,
+                      fontSize: 26,
+                      fontWeight: FontWeight.bold,
                     ),
                   ),
-                  if (s.question != null &&
-                      s.answers != null &&
-                      s.correctIndex != null) ...[
-                    const SizedBox(height: 28),
-                    Card(
-                      elevation: 3,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              "Jautājums",
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            const SizedBox(height: 10),
-                            Text(
-                              s.question!,
-                              style: const TextStyle(
-                                fontSize: 20,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            const SizedBox(height: 14),
-                            ...List.generate(s.answers!.length, (index) {
-                              final buttonColor = _quizButtonColor(
-                                index: index,
-                                correctIndex: s.correctIndex!,
-                              );
 
-                              final textColor = _quizTextColor(
-                                index: index,
-                                correctIndex: s.correctIndex!,
-                              );
+                  const SizedBox(height: 14),
 
-                              return Container(
-                                width: double.infinity,
-                                margin: const EdgeInsets.symmetric(vertical: 5),
-                                child: ElevatedButton(
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: buttonColor,
-                                    disabledBackgroundColor: buttonColor,
-                                    foregroundColor: textColor,
-                                    disabledForegroundColor: textColor,
-                                    padding: const EdgeInsets.symmetric(
-                                      vertical: 14,
-                                      horizontal: 12,
-                                    ),
-                                  ),
-                                  onPressed: _answered
-                                      ? null
-                                      : () {
-                                    setState(() {
-                                      _selectedAnswer = index;
-                                      _answered = true;
-                                    });
-                                  },
-                                  child: Text(
-                                    s.answers![index],
-                                    style: const TextStyle(fontSize: 17),
-                                  ),
-                                ),
-                              );
-                            }),
-                            if (_answered) ...[
-                              const SizedBox(height: 12),
-                              Text(
-                                _selectedAnswer == s.correctIndex
-                                    ? "Pareizi! 🎉"
-                                    : "Nepareizi. Pareizā atbilde ir: ${s.answers![s.correctIndex!]}",
-                                style: const TextStyle(
-                                  fontSize: 17,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ],
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
-                  const SizedBox(height: 28),
-                  Slider(
-                    min: 0,
-                    max: _duration.inSeconds == 0
-                        ? 1
-                        : _duration.inSeconds.toDouble(),
-                    value: _position.inSeconds
-                        .clamp(0, _duration.inSeconds)
-                        .toDouble(),
-                    onChanged: (value) async {
-                      await _player.seek(Duration(seconds: value.toInt()));
-                    },
-                  ),
+                  _buildTabButtons(),
+
+                  const SizedBox(height: 22),
+
+                  if (_selectedTab == SectionTab.photo) _buildPhotoTab(s),
+                  if (_selectedTab == SectionTab.text) _buildTextTab(s),
+                  if (_selectedTab == SectionTab.audio) _buildAudioTab(),
+                  if (_selectedTab == SectionTab.quiz) _buildQuizTab(s),
+
+                  const SizedBox(height: 30),
+
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text(_formatTime(_position)),
-                      Text(_formatTime(_duration)),
-                    ],
-                  ),
-                  const SizedBox(height: 20),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      IconButton(
+                      OutlinedButton.icon(
                         onPressed: _currentIndex == 0 ? null : _prev,
                         icon: const Icon(Icons.skip_previous),
+                        label: const Text("Iepriekšējā"),
                       ),
-                      IconButton(
+                      OutlinedButton.icon(
                         onPressed: _currentIndex >= widget.sections.length - 1
                             ? null
                             : _next,
                         icon: const Icon(Icons.skip_next),
+                        label: const Text("Nākamā"),
                       ),
                     ],
-                  ),
-                  const SizedBox(height: 10),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      IconButton(
-                        icon: const Icon(Icons.replay_10),
-                        onPressed: () async {
-                          final newPos =
-                              _position - const Duration(seconds: 10);
-                          await _player.seek(
-                            newPos < Duration.zero ? Duration.zero : newPos,
-                          );
-                        },
-                      ),
-                      const SizedBox(width: 20),
-                      ElevatedButton.icon(
-                        onPressed: _isLoading ? null : _toggleAudio,
-                        icon: Icon(
-                          _isPlaying ? Icons.pause : Icons.play_arrow,
-                        ),
-                        label: Text(
-                          _isLoading
-                              ? "Ielādē..."
-                              : _isPlaying
-                              ? "Pauze"
-                              : _position == Duration.zero
-                              ? "Atskaņot"
-                              : "Turpināt",
-                        ),
-                      ),
-                      const SizedBox(width: 20),
-                      IconButton(
-                        icon: const Icon(Icons.forward_10),
-                        onPressed: () async {
-                          final newPos =
-                              _position + const Duration(seconds: 10);
-                          await _player.seek(
-                            newPos > _duration ? _duration : newPos,
-                          );
-                        },
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  Center(
-                    child: TextButton.icon(
-                      onPressed: _repeat,
-                      icon: const Icon(Icons.replay),
-                      label: const Text("Atkārtot"),
-                    ),
                   ),
                 ],
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTabButtons() {
+    return Wrap(
+      spacing: 10,
+      runSpacing: 10,
+      children: [
+        _tabButton(
+          tab: SectionTab.photo,
+          label: "Foto",
+          icon: Icons.photo,
+        ),
+        _tabButton(
+          tab: SectionTab.text,
+          label: "Teksts",
+          icon: Icons.article,
+        ),
+        _tabButton(
+          tab: SectionTab.audio,
+          label: "Audio",
+          icon: Icons.headphones,
+        ),
+        _tabButton(
+          tab: SectionTab.quiz,
+          label: "Tests",
+          icon: Icons.quiz,
+        ),
+      ],
+    );
+  }
+
+  Widget _tabButton({
+    required SectionTab tab,
+    required String label,
+    required IconData icon,
+  }) {
+    final selected = _selectedTab == tab;
+
+    return ElevatedButton.icon(
+      onPressed: () {
+        setState(() {
+          _selectedTab = tab;
+        });
+      },
+      icon: Icon(icon),
+      label: Text(label),
+      style: ElevatedButton.styleFrom(
+        backgroundColor: selected ? Colors.blue.shade700 : Colors.grey.shade200,
+        foregroundColor: selected ? Colors.white : Colors.black87,
+        padding: const EdgeInsets.symmetric(
+          vertical: 12,
+          horizontal: 14,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPhotoTab(StorySection s) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final image in s.images) ...[
+          ClipRRect(
+            borderRadius: BorderRadius.circular(18),
+            child: Image.asset(
+              image,
+              width: double.infinity,
+              height: 280,
+              fit: BoxFit.contain,
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildTextTab(StorySection s) {
+    return Card(
+      elevation: 3,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Text(
+          s.text,
+          style: const TextStyle(
+            fontSize: 20,
+            height: 1.5,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAudioTab() {
+    return Card(
+      elevation: 3,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          children: [
+            const Icon(
+              Icons.headphones,
+              size: 52,
+            ),
+
+            const SizedBox(height: 12),
+
+            Slider(
+              min: 0,
+              max: _duration.inSeconds == 0
+                  ? 1
+                  : _duration.inSeconds.toDouble(),
+              value: _position.inSeconds
+                  .clamp(0, _duration.inSeconds)
+                  .toDouble(),
+              onChanged: (value) async {
+                await _player.seek(Duration(seconds: value.toInt()));
+              },
+            ),
+
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(_formatTime(_position)),
+                Text(_formatTime(_duration)),
+              ],
+            ),
+
+            const SizedBox(height: 18),
+
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.replay_10),
+                  onPressed: () async {
+                    final newPos = _position - const Duration(seconds: 10);
+                    await _player.seek(
+                      newPos < Duration.zero ? Duration.zero : newPos,
+                    );
+                  },
+                ),
+
+                const SizedBox(width: 20),
+
+                ElevatedButton.icon(
+                  onPressed: _isLoading ? null : _toggleAudio,
+                  icon: Icon(
+                    _isPlaying ? Icons.pause : Icons.play_arrow,
+                  ),
+                  label: Text(
+                    _isLoading
+                        ? "Ielādē..."
+                        : _isPlaying
+                        ? "Pauze"
+                        : _position == Duration.zero
+                        ? "Atskaņot"
+                        : "Turpināt",
+                  ),
+                ),
+
+                const SizedBox(width: 20),
+
+                IconButton(
+                  icon: const Icon(Icons.forward_10),
+                  onPressed: () async {
+                    final newPos = _position + const Duration(seconds: 10);
+                    await _player.seek(
+                      newPos > _duration ? _duration : newPos,
+                    );
+                  },
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 10),
+
+            TextButton.icon(
+              onPressed: _repeat,
+              icon: const Icon(Icons.replay),
+              label: const Text("Atkārtot"),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildQuizTab(StorySection s) {
+    if (s.question == null || s.answers == null || s.correctIndex == null) {
+      return Card(
+        elevation: 3,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: const Padding(
+          padding: EdgeInsets.all(18),
+          child: Text(
+            "Šai sadaļai tests vēl nav pievienots.",
+            style: TextStyle(fontSize: 18),
+          ),
+        ),
+      );
+    }
+
+    return Card(
+      elevation: 3,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              "Jautājums",
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+
+            const SizedBox(height: 10),
+
+            Text(
+              s.question!,
+              style: const TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+
+            const SizedBox(height: 14),
+
+            ...List.generate(s.answers!.length, (index) {
+              final buttonColor = _quizButtonColor(
+                index: index,
+                correctIndex: s.correctIndex!,
+              );
+
+              final textColor = _quizTextColor(
+                index: index,
+                correctIndex: s.correctIndex!,
+              );
+
+              return Container(
+                width: double.infinity,
+                margin: const EdgeInsets.symmetric(vertical: 5),
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: buttonColor,
+                    disabledBackgroundColor: buttonColor,
+                    foregroundColor: textColor,
+                    disabledForegroundColor: textColor,
+                    padding: const EdgeInsets.symmetric(
+                      vertical: 14,
+                      horizontal: 12,
+                    ),
+                  ),
+                  onPressed: _answered
+                      ? null
+                      : () {
+                    setState(() {
+                      _selectedAnswer = index;
+                      _answered = true;
+                    });
+                  },
+                  child: Text(
+                    s.answers![index],
+                    style: const TextStyle(fontSize: 17),
+                  ),
+                ),
+              );
+            }),
+
+            if (_answered) ...[
+              const SizedBox(height: 14),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: _selectedAnswer == s.correctIndex
+                      ? Colors.green.shade50
+                      : Colors.red.shade50,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: _selectedAnswer == s.correctIndex
+                        ? Colors.green.shade300
+                        : Colors.red.shade300,
+                  ),
+                ),
+                child: Text(
+                  _selectedAnswer == s.correctIndex
+                      ? "✅ Pareizi!"
+                      : "❌ Nepareizi\n✔ Pareizā atbilde: ${s.answers![s.correctIndex!]}",
+                  style: const TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.bold,
+                    height: 1.4,
+                  ),
+                ),
+              ),
+            ],
+          ],
         ),
       ),
     );
