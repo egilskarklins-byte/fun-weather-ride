@@ -9,7 +9,10 @@ final List<AudioStory> stories = [
         title: "Ievads",
         audioPath: "assets/audio/barons_01_ievads.mp3",
         images: [
-          "assets/images/barons.jpg",
+          'assets/images/barons.jpg',
+          'assets/images/barons_3.png',
+          'assets/images/barons_4.png',
+          'assets/images/dainu_skapis.jpg',
         ],
         text: """
 Iedomājies laiku, kad Latvijai vēl nebija savas valsts.
@@ -27,7 +30,10 @@ Viņu bieži sauc par Dainu tēvu.
         title: "Bērnība",
         audioPath: "assets/audio/barons_02_berniba.mp3",
         images: [
-          "assets/images/barons.jpg",
+          'assets/images/barons.jpg',
+          'assets/images/barons_3.png',
+          'assets/images/barons_4.png',
+          'assets/images/dainu_skapis.jpg',
         ],
         text: """
 Krišjānis Barons piedzima laikā, kad latviešu zemnieku bērniem izglītība nebija pašsaprotama.
@@ -48,7 +54,10 @@ Tomēr viņa dzīvē agri parādījās interese par zināšanām, valodu un grā
         title: "Studijas",
         audioPath: "assets/audio/barons_03_studijas.mp3",
         images: [
-          "assets/images/barons.jpg",
+          'assets/images/barons.jpg',
+          'assets/images/barons_3.png',
+          'assets/images/barons_4.png',
+          'assets/images/dainu_skapis.jpg',
         ],
         text: """
 Studiju gadi Baronam deva plašāku skatījumu uz pasauli.
@@ -62,7 +71,10 @@ Barons nebija tikai vācējs — viņš bija arī domātājs un kārtotājs.
         title: "Darbība Krievijā",
         audioPath: "assets/audio/barons_04_krievija.mp3",
         images: [
-          "assets/images/barons.jpg",
+          'assets/images/barons.jpg',
+          'assets/images/barons_3.png',
+          'assets/images/barons_4.png',
+          'assets/images/dainu_skapis.jpg',
         ],
         text: """
 Pēc studiju gadiem Krišjānis Barons devās uz Krievijas impērijas galvaspilsētu Pēterburgu.
@@ -89,7 +101,10 @@ Dzīve svešumā palīdzēja viņam saprast, cik svarīgi ir saglabāt latviešu
         title: "Dainu vākšana",
         audioPath: "assets/audio/barons_05_dainas.mp3",
         images: [
-          "assets/images/dainu_skapis.jpg",
+          'assets/images/barons.jpg',
+          'assets/images/barons_3.png',
+          'assets/images/barons_4.png',
+          'assets/images/dainu_skapis.jpg',
         ],
         text: """
 Latviešu tautasdziesmas tika pierakstītas no cilvēku atmiņām.
@@ -103,7 +118,10 @@ Viņa uzdevums bija tās sakārtot tā, lai tās varētu saglabāt nākamajām p
         title: "Dainu skapis",
         audioPath: "assets/audio/barons_06_dainu_skapis.mp3",
         images: [
-          "assets/images/dainu_skapis.jpg",
+          'assets/images/barons.jpg',
+          'assets/images/barons_3.png',
+          'assets/images/barons_4.png',
+          'assets/images/dainu_skapis.jpg',
         ],
         text: """
 Šis nav parasts skapis.
@@ -128,8 +146,10 @@ Barons tās rūpīgi sakārtoja, lai nekas nepazustu.
         title: "Mantojums",
         audioPath: "assets/audio/barons_07_mantojums.mp3",
         images: [
-          "assets/images/barons.jpg",
-          "assets/images/dainu_skapis.jpg",
+          'assets/images/barons.jpg',
+          'assets/images/barons_3.png',
+          'assets/images/barons_4.png',
+          'assets/images/dainu_skapis.jpg',
         ],
         text: """
 Krišjāņa Barona darbs nav tikai pagātnes liecība.

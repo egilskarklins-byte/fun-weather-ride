@@ -296,18 +296,46 @@ class _SectionScreenState extends State<SectionScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        for (final image in s.images) ...[
+        if (s.images.length == 1)
           ClipRRect(
             borderRadius: BorderRadius.circular(18),
-            child: Image.asset(
-              image,
-              width: double.infinity,
-              height: 280,
-              fit: BoxFit.contain,
+            child: GestureDetector(
+              onTap: () {
+                _openGallery(context, s.images, 0);
+              },
+              child: Image.asset(
+                s.images.first,
+                width: double.infinity,
+                height: 280,
+                fit: BoxFit.contain,
+              ),
             ),
+          )
+        else
+          GridView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: s.images.length,
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 3,
+              crossAxisSpacing: 6,
+              mainAxisSpacing: 6,
+            ),
+            itemBuilder: (context, index) {
+              return GestureDetector(
+                onTap: () {
+                  _openGallery(context, s.images, index);
+                },
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: Image.asset(
+                    s.images[index],
+                    fit: BoxFit.cover,
+                  ),
+                ),
+              );
+            },
           ),
-          const SizedBox(height: 16),
-        ],
       ],
     );
   }
@@ -551,9 +579,139 @@ class _SectionScreenState extends State<SectionScreen> {
     );
   }
 }
-
+void _openGallery(BuildContext context, List<String> images, int startIndex) {
+  Navigator.push(
+    context,
+    MaterialPageRoute(
+      builder: (_) => _GalleryScreen(
+        images: images,
+        startIndex: startIndex,
+      ),
+    ),
+  );
+}
 String _formatTime(Duration d) {
   final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
   final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
   return '$m:$s';
+}
+class _GalleryScreen extends StatefulWidget {
+  const _GalleryScreen({
+    required this.images,
+    required this.startIndex,
+  });
+
+  final List<String> images;
+  final int startIndex;
+
+  @override
+  State<_GalleryScreen> createState() => _GalleryScreenState();
+}
+
+class _GalleryScreenState extends State<_GalleryScreen> {
+  late final PageController _controller;
+  late int _currentIndex;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = widget.startIndex;
+    _controller = PageController(initialPage: widget.startIndex);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _goPrevious() {
+    if (_currentIndex <= 0) return;
+
+    _controller.previousPage(
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOut,
+    );
+  }
+
+  void _goNext() {
+    if (_currentIndex >= widget.images.length - 1) return;
+
+    _controller.nextPage(
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOut,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final canGoPrevious = _currentIndex > 0;
+    final canGoNext = _currentIndex < widget.images.length - 1;
+
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+        title: Text("${_currentIndex + 1}/${widget.images.length}"),
+      ),
+      body: Stack(
+        children: [
+          PageView.builder(
+            controller: _controller,
+            itemCount: widget.images.length,
+            onPageChanged: (index) {
+              setState(() {
+                _currentIndex = index;
+              });
+            },
+            itemBuilder: (context, index) {
+              return InteractiveViewer(
+                minScale: 1,
+                maxScale: 4,
+                child: Center(
+                  child: Image.asset(
+                    widget.images[index],
+                    fit: BoxFit.contain,
+                  ),
+                ),
+              );
+            },
+          ),
+          if (canGoPrevious)
+            Positioned(
+              left: 12,
+              top: 0,
+              bottom: 0,
+              child: Center(
+                child: IconButton.filled(
+                  onPressed: _goPrevious,
+                  icon: const Icon(Icons.chevron_left),
+                  color: Colors.white,
+                  style: IconButton.styleFrom(
+                    backgroundColor: Colors.black54,
+                  ),
+                ),
+              ),
+            ),
+          if (canGoNext)
+            Positioned(
+              right: 12,
+              top: 0,
+              bottom: 0,
+              child: Center(
+                child: IconButton.filled(
+                  onPressed: _goNext,
+                  icon: const Icon(Icons.chevron_right),
+                  color: Colors.white,
+                  style: IconButton.styleFrom(
+                    backgroundColor: Colors.black54,
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 }
