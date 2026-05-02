@@ -6,7 +6,7 @@ final AudioStory dainuSkapisStory = AudioStory(
   sections: [
     StorySection(
       title: "Kas ir Dainu skapis?",
-      audioPath: "assets/audio/barons_06_dainu_skapis.mp3",
+      audioPath: "assets/audio/dainu_skapis_special.mp3",
       images: [
         'assets/images/dainu_skapis.jpg',
       ],
