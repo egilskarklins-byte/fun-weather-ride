@@ -55,6 +55,8 @@ class _StoryScreenState extends State<StoryScreen>
   @override
   Widget build(BuildContext context) {
     final story = widget.story;
+    final guide = Uri.base.queryParameters['guide'];
+    final showQrPromoBox = guide == 'dainu';
 
     return Scaffold(
       appBar: AppBar(
@@ -136,6 +138,32 @@ class _StoryScreenState extends State<StoryScreen>
                   ),
                 );
               }),
+
+              if (showQrPromoBox)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(10, 16, 10, 20),
+                  child: Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.brown.shade50,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: Colors.brown.shade200),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: const [
+                        Icon(Icons.qr_code, color: Colors.brown),
+                        SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            'Šādu QR kodu var izveidot jebkuram muzeja priekšmetam — galdam, gultai, šūpuļkrēslam vai citam eksponātam.',
+                            style: TextStyle(fontSize: 14),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
             ],
           ),
         ),
