@@ -16,7 +16,7 @@ import '../services/project_storage_service.dart';
 
 import 'results_screen.dart';
 import '../state/trip_controller.dart';
-
+import 'surprise/input_screen.dart';
 class PlannerInputScreen extends StatefulWidget {
   const PlannerInputScreen({super.key});
 
@@ -924,7 +924,20 @@ class _PlannerInputScreenState extends State<PlannerInputScreen> {
                   icon: const Icon(Icons.auto_graph),
                   label: const Text('Aprēķināt optimālo dienu skaitu'),
                 ),
+                const SizedBox(height: 12),
 
+                OutlinedButton.icon(
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const SurpriseInputScreen(),
+                      ),
+                    );
+                  },
+                  icon: const Icon(Icons.explore),
+                  label: const Text('Surprise POI tests'),
+                ),
                 const SizedBox(height: 24),
                 SizedBox(
                   width: double.infinity,

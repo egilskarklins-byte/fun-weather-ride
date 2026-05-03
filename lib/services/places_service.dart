@@ -1,4 +1,5 @@
 import 'dart:convert';
+
 import 'package:http/http.dart' as http;
 
 import '../models/geo.dart';
@@ -25,24 +26,32 @@ class PlacesService {
     final q = input.trim();
     if (q.length < 2) return const [];
 
-    final uri = Uri.https('maps.googleapis.com', '/maps/api/place/autocomplete/json', {
-      'input': q,
-      'key': _apiKey,
-      if (languageCode != null) 'language': languageCode,
-      if (components != null) 'components': components,
-    });
+    final uri = Uri.https(
+      'maps.googleapis.com',
+      '/maps/api/place/autocomplete/json',
+      {
+        'input': q,
+        'key': _apiKey,
+        if (languageCode != null) 'language': languageCode,
+        if (components != null) 'components': components,
+      },
+    );
 
     final resp = await http.get(uri);
     if (resp.statusCode != 200) return const [];
 
     final data = jsonDecode(resp.body) as Map<String, dynamic>;
-    final preds = (data['predictions'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
+    final preds =
+        (data['predictions'] as List?)?.cast<Map<String, dynamic>>() ??
+            const [];
 
     return preds
-        .map((p) => PlaceSuggestion(
-      placeId: p['place_id'] as String,
-      description: p['description'] as String,
-    ))
+        .map(
+          (p) => PlaceSuggestion(
+        placeId: p['place_id'] as String,
+        description: p['description'] as String,
+      ),
+    )
         .toList();
   }
 
@@ -50,12 +59,16 @@ class PlacesService {
     required String placeId,
     String? languageCode,
   }) async {
-    final uri = Uri.https('maps.googleapis.com', '/maps/api/place/details/json', {
-      'place_id': placeId,
-      'fields': 'place_id,name,geometry,types',
-      'key': _apiKey,
-      if (languageCode != null) 'language': languageCode,
-    });
+    final uri = Uri.https(
+      'maps.googleapis.com',
+      '/maps/api/place/details/json',
+      {
+        'place_id': placeId,
+        'fields': 'place_id,name,geometry,types',
+        'key': _apiKey,
+        if (languageCode != null) 'language': languageCode,
+      },
+    );
 
     final resp = await http.get(uri);
     if (resp.statusCode != 200) return null;
@@ -72,7 +85,8 @@ class PlacesService {
     final lat = (loc['lat'] as num).toDouble();
     final lon = (loc['lng'] as num).toDouble();
 
-    final types = ((result['types'] as List?) ?? const []).map((e) => e.toString()).toList();
+    final types =
+    ((result['types'] as List?) ?? const []).map((e) => e.toString()).toList();
     final cats = _mapTypesToCategories(types);
 
     return Poi(
@@ -81,7 +95,8 @@ class PlacesService {
       location: LatLon(lat, lon),
       durationH: _defaultDurationFromCats(cats),
       categories: cats,
-      isIndoor: cats.contains(PoiCategory.museum) || cats.contains(PoiCategory.indoor),
+      isIndoor:
+      cats.contains(PoiCategory.museum) || cats.contains(PoiCategory.indoor),
     );
   }
 
@@ -92,17 +107,22 @@ class PlacesService {
     final q = query.trim();
     if (q.isEmpty) return null;
 
-    final uri = Uri.https('maps.googleapis.com', '/maps/api/place/textsearch/json', {
-      'query': q,
-      'key': _apiKey,
-      if (languageCode != null) 'language': languageCode,
-    });
+    final uri = Uri.https(
+      'maps.googleapis.com',
+      '/maps/api/place/textsearch/json',
+      {
+        'query': q,
+        'key': _apiKey,
+        if (languageCode != null) 'language': languageCode,
+      },
+    );
 
     final resp = await http.get(uri);
     if (resp.statusCode != 200) return null;
 
     final data = jsonDecode(resp.body) as Map<String, dynamic>;
-    final results = (data['results'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
+    final results =
+        (data['results'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
     if (results.isEmpty) return null;
 
     final r = results.first;
@@ -110,6 +130,46 @@ class PlacesService {
     if (placeId == null) return null;
 
     return placeDetailsToPoi(placeId: placeId, languageCode: languageCode);
+  }
+
+  Future<String> reverseGeocode({
+    required LatLon location,
+    String? languageCode,
+  }) async {
+    final point = location;
+
+    final uri = Uri.https(
+      'nominatim.openstreetmap.org',
+      '/reverse',
+      {
+        'format': 'jsonv2',
+        'lat': point.lat.toString(),
+        'lon': point.lon.toString(),
+        'zoom': '14',
+        'addressdetails': '1',
+        if (languageCode != null) 'accept-language': languageCode,
+      },
+    );
+
+    final response = await http.get(
+      uri,
+      headers: const {
+        'User-Agent': 'FunWeatherRide/1.0',
+      },
+    );
+
+    if (response.statusCode != 200) {
+      return '${point.lat.toStringAsFixed(5)}, ${point.lon.toStringAsFixed(5)}';
+    }
+
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+    final displayName = data['display_name']?.toString();
+
+    if (displayName == null || displayName.trim().isEmpty) {
+      return '${point.lat.toStringAsFixed(5)}, ${point.lon.toStringAsFixed(5)}';
+    }
+
+    return displayName;
   }
 
   Set<PoiCategory> _mapTypesToCategories(List<String> types) {
@@ -125,9 +185,13 @@ class PlacesService {
     if (t.contains('natural_feature')) out.add(PoiCategory.nature);
     if (t.contains('tourist_attraction')) out.add(PoiCategory.viewpoint);
 
-    if (t.contains('restaurant') || t.contains('cafe')) out.add(PoiCategory.food);
+    if (t.contains('restaurant') || t.contains('cafe')) {
+      out.add(PoiCategory.food);
+    }
 
-    if (t.contains('locality') || t.contains('neighborhood')) out.add(PoiCategory.city);
+    if (t.contains('locality') || t.contains('neighborhood')) {
+      out.add(PoiCategory.city);
+    }
 
     out.add(PoiCategory.mustSee);
 
@@ -137,7 +201,9 @@ class PlacesService {
   double _defaultDurationFromCats(Set<PoiCategory> cats) {
     if (cats.contains(PoiCategory.museum)) return 2.0;
     if (cats.contains(PoiCategory.indoor)) return 1.5;
-    if (cats.contains(PoiCategory.nature) || cats.contains(PoiCategory.beach)) return 2.5;
+    if (cats.contains(PoiCategory.nature) || cats.contains(PoiCategory.beach)) {
+      return 2.5;
+    }
     return 1.5;
   }
 }
